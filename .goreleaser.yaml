@@ -1,0 +1,72 @@
+# goreleaser configuration for nexus-cli.
+# Build snapshots locally with: goreleaser release --snapshot --clean
+version: 2
+
+# Default optional env vars so templates referencing them don't error when unset.
+env:
+  - HOMEBREW_TAP_TOKEN={{ if index .Env "HOMEBREW_TAP_TOKEN" }}{{ .Env.HOMEBREW_TAP_TOKEN }}{{ end }}
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: nexus-cli
+    main: .
+    binary: nexus-cli
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}}
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+dockers:
+  - image_templates:
+      - "ghcr.io/whoisnjoguu/nexus-cli:{{ .Version }}"
+      - "ghcr.io/whoisnjoguu/nexus-cli:latest"
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--platform=linux/amd64"
+
+brews:
+  - name: nexus-cli
+    repository:
+      owner: whoisnjoguu
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    # Skip the tap push unless a PAT for the tap repo is provided.
+    skip_upload: "{{ if .Env.HOMEBREW_TAP_TOKEN }}false{{ else }}true{{ end }}"
+    homepage: "https://github.com/whoisnjoguu/nexus-cli"
+    description: "Zero-trust security sidecar, identity broker, and MCP gateway for autonomous agents"
+    license: "MIT"
+    test: |
+      system "#{bin}/nexus-cli", "--help"
