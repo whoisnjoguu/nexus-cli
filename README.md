@@ -68,19 +68,27 @@ verifiable **dual-actor identity** (Agent + Human), human-in-the-loop approvals,
 
 ## Features
 
-- 🛡️ **Least-privilege policy** — declarative `nexus.yaml` with per-tool scopes, egress allowlist, and `allow` / `deny` / `hitl` decisions; deny-by-default.
-- 🔗 **Tool-chain taint tracking** — escalates egress to non-allowlisted hosts once a session touches sensitive data (catches read-then-exfiltrate).
-- 🧑‍⚖️ **Human-in-the-loop** — native approval prompts (TUI, or MCP elicitation in Claude Code / Copilot); fails closed with no interactive terminal.
-- 🪪 **Dual-actor identity** — short-lived Ed25519 tokens binding agent (`sub`) to a verified human (`act_as`) with `jti` replay protection and a JWKS endpoint for downstream verification.
-- 🔑 **Secretless egress** — brokered credentials injected at the edge; the agent never holds a durable secret.
-- �‍💻 **Agent-requested access** — MCP tools let an agent request provider access; the human approves consent and the token stays in the broker (`get_credential` is deny-by-default).
-- 🎛️ **TUI policy editor** — `nexus-cli policy edit` manages providers, scopes, tools, egress, and defaults; writes `nexus.yaml` for you.
-- 🧾 **Tamper-evident audit** — hash-chained JSONL log with `audit verify`.
-- 🔌 **Plug-in anywhere** — HTTP forward proxy, MCP stdio gateway (aggregates & gates upstream MCP servers), or embedded Go/Python SDK.
+- **Least-privilege policy** — declarative `nexus.yaml` with per-tool scopes, egress allowlist, and `allow` / `deny` / `hitl` decisions.
+- **Safe-tier defaults (no approval fatigue)** — read-only tools and GETs run without prompting, the destructive tail (`execute_shell`, …) is denied, and only the ambiguous middle asks.
+- **Approve once, session, or always** — a HITL prompt offers _once_, _this session_, or _always_ (saved to `nexus.yaml`), so you approve intent — not every tool call.
+- **Tool-chain taint tracking** — escalates egress to non-allowlisted hosts once a session touches sensitive data (catches read-then-exfiltrate).
+- **Dual-actor identity** — short-lived Ed25519 tokens binding agent (`sub`) to a verified human (`act_as`) with `jti` replay protection and a JWKS endpoint for downstream verification.
+- **Secretless egress** — brokered credentials injected at the edge; the agent never holds a durable secret.
+- **Agent-requested access** — MCP tools let an agent request provider access; the human approves consent and the token stays in the broker (`get_credential` is deny-by-default).
+- **TUI policy editor** — `nexus-cli policy edit` manages providers, scopes, tools, egress, and defaults; writes `nexus.yaml` for you.
+- **Tamper-evident audit** — hash-chained JSONL log with `audit verify`.
+- **Plug-in anywhere** — HTTP forward proxy, MCP stdio gateway (aggregates & gates upstream MCP servers), or embedded Go/Python SDK.
 
 ## Install
 
-**Prebuilt binary (recommended)** — installs the latest release for your OS/arch:
+**Zero-install via npx** — great for MCP hosts; downloads the right binary on first run:
+
+```bash
+npx -y @whoisnjoguu/nexus-cli mcp serve --strict
+npx -y @whoisnjoguu/nexus-cli version
+```
+
+**Prebuilt binary** — installs the latest release for your OS/arch:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/whoisnjoguu/nexus-cli/master/install.sh | sh
@@ -376,6 +384,16 @@ See [sdk/python/README.md](sdk/python/README.md).
 
 ## IDE Integration
 
+**One-liners (no config file):**
+
+```bash
+# Claude Code
+claude mcp add nexus -- npx -y @whoisnjoguu/nexus-cli mcp serve --strict
+
+# VS Code / Copilot
+code --add-mcp '{"name":"nexus","command":"npx","args":["-y","@whoisnjoguu/nexus-cli","mcp","serve","--strict"]}'
+```
+
 ### Claude Code (MCP)
 
 ```json
@@ -391,9 +409,12 @@ See [sdk/python/README.md](sdk/python/README.md).
 ```
 
 In `--strict`, tool calls surface a native approval prompt in Claude Code via MCP elicitation before
-executing.
+executing (approve once, for the session, or always).
 
 ### GitHub Copilot / VS Code
+
+`nexus-cli init` writes `.vscode/mcp.json`; open it and click **Start**, or use the `code --add-mcp`
+one-liner above. For HTTP tool traffic, route it through the proxy instead:
 
 ```bash
 export HTTP_PROXY="http://127.0.0.1:8075"
@@ -403,7 +424,7 @@ export HTTPS_PROXY="http://127.0.0.1:8075"
 ## Commands
 
 | Command                   | Description                                            |
-| ------------------------- | ------------------------------------------------------ | --- | ------------------- | --------------------------------------- |
+| ------------------------- | ------------------------------------------------------ |
 | `nexus-cli init`          | Scaffold `nexus.yaml` + MCP host configs               |
 | `nexus-cli login`         | Authenticate the human principal via the Gateway       |
 | `nexus-cli connect`       | Connect an additional provider to your session         |
@@ -419,15 +440,18 @@ export HTTPS_PROXY="http://127.0.0.1:8075"
 | `nexus-cli audit tail`    | Show recent authorization decisions                    |
 | `nexus-cli audit verify`  | Verify the audit hash chain                            |
 | `nexus-cli keys jwks`     | Print the public verification key as a JWKS            |
-| `nexus-cli doctor`        | Diagnose the local setup                               |     | `nexus-cli version` | Print the version, commit, and platform |
+| `nexus-cli doctor`        | Diagnose the local setup                               |
+| `nexus-cli version`       | Print the version, commit, and platform                |
 
 ## Project Layout
 
 ```text
 nexus-cli/
 ├── cmd/                 # Cobra command tree
+├── external/            # embedded init scaffolds (nexus.yaml, mcp.json templates)
 ├── internal/
 │   └── tui/             # Bubble Tea policy editor (nexus-cli policy edit)
+├── packaging/npm/       # npx launcher (@whoisnjoguu/nexus-cli)
 ├── pkg/
 │   ├── audit/           # hash-chained, tamper-evident decision log
 │   ├── credential/      # broker credential resolver (nexus-framework SDK)
