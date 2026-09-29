@@ -6,6 +6,7 @@ import (
 )
 
 // openBrowser best-effort opens a URL in the user's default browser
+func openBrowser(url string) {
 	var cmd string
 	var args []string
 	switch runtime.GOOS {
