@@ -518,7 +518,7 @@ rather than a public issue.
 
 ## License
 
-[MIT](LICENSE) © Alan Njogu.
+[MIT](LICENSE) © Alan N.
 
 ## Security Notes
 
