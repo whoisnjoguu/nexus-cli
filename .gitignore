@@ -1,0 +1,16 @@
+# Build output
+/nexus-cli
+
+# Go
+*.test
+*.out
+coverage.*
+
+# Local secrets / keys (also lives in ~/.nexus by default)
+*.key
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+.claude/
