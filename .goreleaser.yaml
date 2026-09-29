@@ -49,14 +49,6 @@ changelog:
       - "^test:"
       - "^chore:"
 
-dockers:
-  - image_templates:
-      - "ghcr.io/whoisnjoguu/nexus-cli:{{ .Version }}"
-      - "ghcr.io/whoisnjoguu/nexus-cli:latest"
-    dockerfile: Dockerfile
-    build_flag_templates:
-      - "--platform=linux/amd64"
-
 brews:
   - name: nexus-cli
     repository:
