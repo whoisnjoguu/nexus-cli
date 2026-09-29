@@ -73,10 +73,23 @@ verifiable **dual-actor identity** (Agent + Human), human-in-the-loop approvals,
 - 🧑‍⚖️ **Human-in-the-loop** — native approval prompts (TUI, or MCP elicitation in Claude Code / Copilot); fails closed with no interactive terminal.
 - 🪪 **Dual-actor identity** — short-lived Ed25519 tokens binding agent (`sub`) to a verified human (`act_as`) with `jti` replay protection and a JWKS endpoint for downstream verification.
 - 🔑 **Secretless egress** — brokered credentials injected at the edge; the agent never holds a durable secret.
+- �‍💻 **Agent-requested access** — MCP tools let an agent request provider access; the human approves consent and the token stays in the broker (`get_credential` is deny-by-default).
+- 🎛️ **TUI policy editor** — `nexus-cli policy edit` manages providers, scopes, tools, egress, and defaults; writes `nexus.yaml` for you.
 - 🧾 **Tamper-evident audit** — hash-chained JSONL log with `audit verify`.
 - 🔌 **Plug-in anywhere** — HTTP forward proxy, MCP stdio gateway (aggregates & gates upstream MCP servers), or embedded Go/Python SDK.
 
 ## Install
+
+**Prebuilt binary (recommended)** — installs the latest release for your OS/arch:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/whoisnjoguu/nexus-cli/master/install.sh | sh
+NEXUS_VERSION=v0.2.0 curl -fsSL https://raw.githubusercontent.com/whoisnjoguu/nexus-cli/master/install.sh | sh   # pin a version
+```
+
+**Homebrew** — `brew install whoisnjoguu/tap/nexus-cli` · **Go** — `go install github.com/whoisnjoguu/nexus-cli@latest`
+
+**From source:**
 
 ```bash
 git clone https://github.com/whoisnjoguu/nexus-cli.git
@@ -86,7 +99,8 @@ make install        # or install to $GOBIN / $GOPATH/bin
 ```
 
 Requires Go 1.25+. Prebuilt binaries for Linux, macOS, and Windows (amd64 + arm64), a container
-image, and a Homebrew formula are published on each release via `goreleaser`.
+image, and a Homebrew formula are published on each release via `goreleaser`. Check your build with
+`nexus-cli version`.
 
 ## Quick start
 
@@ -137,8 +151,31 @@ Dry-run any call without executing it:
 
 ```bash
 nexus-cli policy test --method POST --url http://api.internal.company.com/v1/payouts/execute --scopes payout:write
+nexus-cli policy test --tool request_access --provider github    # test provider access rules
 # Decision: HITL
 ```
+
+### Edit the policy interactively (no YAML by hand)
+
+`nexus-cli policy edit` opens a Bubble Tea TUI to manage the whole policy — provider access +
+scopes, MCP tool rules, the egress allowlist, and defaults — and writes `nexus.yaml` on save.
+
+```bash
+nexus-cli policy edit --gateway https://your-gateway.example.com
+```
+
+```text
+┌ nexus · policy editor ─────────────────────────  nexus.yaml ● unsaved ┐
+│ ▸ Providers   │  github               [ ALLOW ]  cred [ DENY ]        │
+│   Tools       │    ▣ repo  ▣ read:user  ▢ delete_repo                 │
+│   Egress      │  google-drive         [ HITL  ]  cred [ DENY ]        │
+│   Defaults    │    ▣ openid ▣ email ▢ drive                           │
+├───────────────────────────────────────────────────────────────────────┤
+│ ↑↓ move · tab section · a/h/d action · space toggle · ctrl+s save · q  │
+└───────────────────────────────────────────────────────────────────────┘
+```
+
+Scopes are pulled live from the Gateway's catalog, so you check real provider scopes.
 
 ## Identity
 
@@ -150,12 +187,23 @@ nexus-cli policy test --method POST --url http://api.internal.company.com/v1/pay
 connection handle — it never holds a provider secret.
 
 ```bash
-nexus-cli login --provider slack                                   # any Gateway-registered provider
-nexus-cli login --provider github --scopes db:read,payout:write    # --scopes = nexus ceiling to delegate
-nexus-cli login --provider google --gateway http://localhost:8090
+GW="https://your-gateway.example.com"   # or export NEXUS_GATEWAY_URL
+
+nexus-cli login --provider google-drive --gateway "$GW"            # any Gateway-registered provider
+nexus-cli login --provider github --gateway "$GW" --scopes db:read # --scopes = nexus ceiling to delegate
 nexus-cli login --provider local  --email alice@company.com        # offline fallback (weak attribution)
 nexus-cli whoami
 nexus-cli logout
+```
+
+### Connect additional providers
+
+One human can hold connections to many providers at once. Add more without re-logging-in:
+
+```bash
+nexus-cli connect --provider github --gateway "$GW"   # browser consent, stored in your session
+nexus-cli connections                                 # list connections + live status
+nexus-cli providers --gateway "$GW"                   # what the Gateway offers
 ```
 
 Login opens your browser for consent, waits for the Gateway to activate the connection, and caches a
@@ -246,6 +294,39 @@ mcp:
 
 Then a host replaces N server entries with a single `nexus-cli mcp serve`.
 
+### Agents request provider access (secretless)
+
+When started with a Gateway (`--gateway`, `NEXUS_GATEWAY_URL`, or your login), the MCP server exposes
+broker-access tools so an agent can request credentials for a provider — but **the human approves the
+OAuth consent, and the agent never sees a raw token**:
+
+| Tool                                | What it does                                                                         |
+| ----------------------------------- | ------------------------------------------------------------------------------------ |
+| `list_providers`                    | Providers available on the Gateway.                                                  |
+| `request_access(provider, scopes?)` | Returns a consent URL for the human to approve; the agent cannot self-grant.         |
+| `connection_status(provider)`       | Poll until the connection is active.                                                 |
+| `get_credential(provider)`          | Returns a token — **denied by default** (secretless); only if a policy rule opts in. |
+
+```bash
+nexus-cli mcp serve --gateway https://your-gateway.example.com
+```
+
+Access per provider is governed by the `providers:` section of `nexus.yaml` (edit it with
+`nexus-cli policy edit`):
+
+```yaml
+providers:
+  github:
+    access: allow # request_access allowed
+    scopes: [repo, read:user]
+  google-drive:
+    access: hitl # request_access needs human approval
+  # get_credential is deny-by-default everywhere unless you set `credential: hitl|allow`
+```
+
+The recommended pattern is **capability, not tokens**: let the agent act _through_ nexus (proxy
+injection or a gated upstream MCP server) so the secret stays in the broker.
+
 ## Audit log
 
 Every decision is appended to a hash-chained JSONL log at `~/.nexus/audit.jsonl`:
@@ -321,34 +402,40 @@ export HTTPS_PROXY="http://127.0.0.1:8075"
 
 ## Commands
 
-| Command                   | Description                                              |
-| ------------------------- | -------------------------------------------------------- |
-| `nexus-cli init`          | Scaffold `nexus.yaml` + MCP host configs                 |
-| `nexus-cli login`         | Authenticate the human principal (github / oidc / local) |
-| `nexus-cli whoami`        | Show the logged-in principal                             |
-| `nexus-cli logout`        | Clear the cached session                                 |
-| `nexus-cli identity mint` | Mint a short-lived dual-actor JWT for an agent session   |
-| `nexus-cli dev`           | Start the local zero-trust proxy with policy + HITL      |
-| `nexus-cli mcp serve`     | Serve / aggregate MCP tool servers behind the policy     |
-| `nexus-cli policy test`   | Dry-run a tool call against the policy                   |
-| `nexus-cli audit tail`    | Show recent authorization decisions                      |
-| `nexus-cli audit verify`  | Verify the audit hash chain                              |
-| `nexus-cli keys jwks`     | Print the public verification key as a JWKS              |
-| `nexus-cli doctor`        | Diagnose the local setup                                 |
+| Command                   | Description                                            |
+| ------------------------- | ------------------------------------------------------ | --- | ------------------- | --------------------------------------- |
+| `nexus-cli init`          | Scaffold `nexus.yaml` + MCP host configs               |
+| `nexus-cli login`         | Authenticate the human principal via the Gateway       |
+| `nexus-cli connect`       | Connect an additional provider to your session         |
+| `nexus-cli connections`   | List provider connections + live status                |
+| `nexus-cli providers`     | List providers available on the Gateway                |
+| `nexus-cli whoami`        | Show the logged-in principal                           |
+| `nexus-cli logout`        | Clear the cached session                               |
+| `nexus-cli identity mint` | Mint a short-lived dual-actor JWT for an agent session |
+| `nexus-cli dev`           | Start the local zero-trust proxy with policy + HITL    |
+| `nexus-cli mcp serve`     | Serve / aggregate MCP tool servers behind the policy   |
+| `nexus-cli policy edit`   | Interactive TUI policy editor (writes `nexus.yaml`)    |
+| `nexus-cli policy test`   | Dry-run a tool call against the policy                 |
+| `nexus-cli audit tail`    | Show recent authorization decisions                    |
+| `nexus-cli audit verify`  | Verify the audit hash chain                            |
+| `nexus-cli keys jwks`     | Print the public verification key as a JWKS            |
+| `nexus-cli doctor`        | Diagnose the local setup                               |     | `nexus-cli version` | Print the version, commit, and platform |
 
 ## Project Layout
 
 ```text
 nexus-cli/
 ├── cmd/                 # Cobra command tree
+├── internal/
+│   └── tui/             # Bubble Tea policy editor (nexus-cli policy edit)
 ├── pkg/
 │   ├── audit/           # hash-chained, tamper-evident decision log
 │   ├── credential/      # broker credential resolver (nexus-framework SDK)
 │   ├── hitl/            # Bubbletea human-in-the-loop approval prompt
 │   ├── jwt/             # Ed25519 signing, verification, keystore, replay guard, JWKS
-│   ├── mcp/             # MCP stdio server + upstream gateway
+│   ├── mcp/             # MCP stdio server + upstream gateway + broker-access tools
 │   ├── policy/          # declarative least-privilege policy engine
-│   ├── principal/       # human identity via nexus-framework Gateway (+ local) + session
+│   ├── principal/       # human identity + multi-provider connections via the Gateway
 │   ├── proxy/           # intercepting forward proxy + CONNECT tunneling + auth
 │   └── sdk/             # embeddable Go gate + gating http.RoundTripper
 ├── sdk/python/          # Python SDK
