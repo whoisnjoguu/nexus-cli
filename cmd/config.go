@@ -32,3 +32,17 @@ func loadConfig(path string) (cfg configFile, exists bool, err error) {
 	}
 	return cfg, true, nil
 }
+
+// appendPolicyRule adds an "always allow" rule to the policy file
+func appendPolicyRule(path string, rule policy.Rule) error {
+	cfg, exists, err := loadConfig(path)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		cfg.Policy = policy.DefaultPolicy()
+	}
+	// Prepend so the new allow wins over a broader hitl/deny below it.
+	cfg.Policy.Tools = append([]policy.Rule{rule}, cfg.Policy.Tools...)
+	return writeConfig(path, cfg)
+}
