@@ -47,6 +47,13 @@ var mcpServeCmd = &cobra.Command{
 		} else if exists {
 			mcfg.Engine = policy.NewEngine(cfg.Policy)
 			mcfg.Upstreams = cfg.MCP.Upstreams
+		} else {
+			mcfg.Engine = policy.NewEngine(policy.DefaultPolicy())
+		}
+		mcfg.OnPersistRule = func(rule policy.Rule) {
+			if err := appendPolicyRule(mcpPolicy, rule); err != nil {
+				fmt.Fprintf(os.Stderr, "note: could not persist rule to %s: %v\n", mcpPolicy, err)
+			}
 		}
 
 		// Bind act_as to the logged-in human so the agent cannot forge it, and expose the human's
