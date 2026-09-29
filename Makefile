@@ -2,16 +2,20 @@ BINARY := nexus-cli
 PKG    := ./...
 PORT   ?= 8075
 
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)
+
 .DEFAULT_GOAL := build
 
 .PHONY: build install run test vet fmt tidy check clean help
 
 
 build: 
-	go build -o $(BINARY) .
+	go build -ldflags "$(LDFLAGS)" -o $(BINARY) .
 
 install: 
-	go install .
+	go install -ldflags "$(LDFLAGS)" .
 
 run: build 
 	./$(BINARY) dev --port $(PORT)
