@@ -1,0 +1,39 @@
+{
+  "name": "@whoisnjoguu/nexus-cli",
+  "version": "0.0.0",
+  "description": "Zero-trust security sidecar, identity broker, and MCP gateway for autonomous agents.",
+  "bin": {
+    "nexus-cli": "bin/nexus-cli.js"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "keywords": [
+    "ai",
+    "agents",
+    "mcp",
+    "security",
+    "zero-trust",
+    "guardrails"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/whoisnjoguu/nexus-cli.git"
+  },
+  "homepage": "https://github.com/whoisnjoguu/nexus-cli",
+  "license": "MIT"
+}
