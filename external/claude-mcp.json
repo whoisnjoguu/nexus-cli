@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "nexus-security-guardrail": {
+      "command": "nexus-cli",
+      "args": [__ARGS__]
+    }
+  }
+}

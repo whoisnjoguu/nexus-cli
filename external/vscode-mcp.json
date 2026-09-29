@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "nexus-security-guardrail": {
+      "type": "stdio",
+      "command": "nexus-cli",
+      "args": [__ARGS__]
+    }
+  }
+}

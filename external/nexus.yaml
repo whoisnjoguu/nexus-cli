@@ -1,0 +1,54 @@
+# nexus.yaml — least-privilege policy for your agent's tool calls.
+# Tip: edit this interactively with 'nexus-cli policy edit' instead of by hand.
+agent: my-agent
+
+# Safe-tier defaults: read-only tools run freely, the destructive tail is denied, and everything
+# ambiguous asks once (you can then pick "this session" or "always" at the prompt).
+default_action: hitl
+escalate_when_tainted: true
+
+# Hosts the agent may reach. Anything not listed (and not matched by a rule) needs approval/denied.
+egress:
+  allow:
+    - "*.github.com"
+    - "api.openai.com"
+
+# Per-provider broker access (managed by 'nexus-cli policy edit'). get_credential is deny-by-default.
+providers:
+  github:
+    access: allow
+    scopes: [repo, read:user]
+
+tools:
+  # --- deny the catastrophic ---
+  - match: { tool: execute_shell }
+    action: deny
+
+  # --- allow the safe, read-only tail (no prompts) ---
+  - match: { tool: "*read*" }
+    action: allow
+  - match: { tool: "*list*" }
+    action: allow
+  - match: { tool: "*search*" }
+    action: allow
+  - match: { method: GET }
+    action: allow
+
+  # --- ambiguous middle: approve once, then "session" or "always" ---
+  - match: { method: POST, path: "/v1/payouts/**" }
+    scope: payout:write
+    action: hitl
+    one_time: true
+
+  # Secretless egress: nexus injects a broker credential ('nexus-cli dev --inject'),
+  # so the agent never holds a GitHub token. Requires 'nexus-cli login --provider github'.
+  - match: { method: GET, host: "api.github.com", path: "/**" }
+    action: allow
+    inject: true
+
+# Optional: MCP servers this gateway spawns, aggregates, and gates behind the policy above.
+# mcp:
+#   upstreams:
+#     - name: fs
+#       command: npx
+#       args: ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
