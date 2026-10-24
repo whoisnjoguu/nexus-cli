@@ -34,33 +34,30 @@ func (s *Server) saveSession() {
 	}
 }
 
-func (s *Server) callListProviders(id json.RawMessage) {
+func (s *Server) callListProviders() map[string]any {
 	if !s.brokerReady() {
-		s.toolResult(id, true, "broker access not configured (no Gateway URL)")
-		return
+		return textResult(true, "broker access not configured (no Gateway URL)")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	providers, err := principal.ListProviders(ctx, s.gateway)
 	if err != nil {
-		s.toolResult(id, true, "list providers failed: "+err.Error())
-		return
+		return textResult(true, "list providers failed: "+err.Error())
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Providers available on the Gateway (%d):\n", len(providers))
 	for _, p := range providers {
 		fmt.Fprintf(&b, "- %s [%s] — %s\n", p.Name, p.AuthType, p.Category)
 	}
-	s.toolResult(id, false, b.String())
+	return textResult(false, b.String())
 }
 
-func (s *Server) callListConnections(id json.RawMessage) {
+func (s *Server) callListConnections() map[string]any {
 	s.sessionMu.Lock()
 	sess := s.session
 	s.sessionMu.Unlock()
 	if sess == nil || len(sess.Connections) == 0 {
-		s.toolResult(id, false, "No provider connections yet. Use request_access to add one.")
-		return
+		return textResult(false, "No provider connections yet. Use request_access to add one.")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -80,21 +77,19 @@ func (s *Server) callListConnections(id json.RawMessage) {
 		}
 		fmt.Fprintf(&b, "- %s: %s (%s)\n", name, active, c.ConnectionID)
 	}
-	s.toolResult(id, false, b.String())
+	return textResult(false, b.String())
 }
 
-func (s *Server) callRequestAccess(id, args json.RawMessage) {
+func (s *Server) callRequestAccess(args json.RawMessage) map[string]any {
 	if !s.brokerReady() {
-		s.toolResult(id, true, "broker access not configured (no Gateway URL)")
-		return
+		return textResult(true, "broker access not configured (no Gateway URL)")
 	}
 	var a struct {
 		Provider string   `json:"provider"`
 		Scopes   []string `json:"scopes"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil || a.Provider == "" {
-		s.toolResult(id, true, "provider is required")
-		return
+		return textResult(true, "provider is required")
 	}
 
 	userID := s.actAs
@@ -119,8 +114,7 @@ func (s *Server) callRequestAccess(id, args json.RawMessage) {
 		ReturnURL:      s.returnURL,
 	})
 	if err != nil {
-		s.toolResult(id, true, "request access failed: "+err.Error())
-		return
+		return textResult(true, "request access failed: "+err.Error())
 	}
 
 	sess := s.ensureSession()
@@ -141,34 +135,30 @@ func (s *Server) callRequestAccess(id, args json.RawMessage) {
 			"Then call connection_status with provider=%q until it reports active.",
 		a.Provider, pending.AuthURL, a.Provider,
 	)
-	s.toolResult(id, false, msg)
+	return textResult(false, msg)
 }
 
-func (s *Server) callConnectionStatus(id, args json.RawMessage) {
+func (s *Server) callConnectionStatus(args json.RawMessage) map[string]any {
 	provider := extractProvider(args)
 	if provider == "" {
-		s.toolResult(id, true, "provider is required")
-		return
+		return textResult(true, "provider is required")
 	}
 	s.sessionMu.Lock()
 	sess := s.session
 	s.sessionMu.Unlock()
 	if sess == nil {
-		s.toolResult(id, true, "no connection for provider "+provider+"; call request_access first")
-		return
+		return textResult(true, "no connection for provider "+provider+"; call request_access first")
 	}
 	c, ok := sess.GetConnection(provider)
 	if !ok {
-		s.toolResult(id, true, "no connection for provider "+provider+"; call request_access first")
-		return
+		return textResult(true, "no connection for provider "+provider+"; call request_access first")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	status, err := principal.CheckStatus(ctx, c.GatewayURL, c.ConnectionID)
 	if err != nil {
-		s.toolResult(id, true, "status check failed: "+err.Error())
-		return
+		return textResult(true, "status check failed: "+err.Error())
 	}
 	if principal.IsActiveStatus(status) && c.Status != "active" {
 		c.Status = "active"
@@ -178,47 +168,40 @@ func (s *Server) callConnectionStatus(id, args json.RawMessage) {
 		s.saveSession()
 	}
 	if principal.IsActiveStatus(status) {
-		s.toolResult(id, false, fmt.Sprintf("%s is active — access granted.", provider))
-		return
+		return textResult(false, fmt.Sprintf("%s is active — access granted.", provider))
 	}
-	s.toolResult(id, false, fmt.Sprintf("%s is not active yet (status: %s). The human must complete consent.", provider, status))
+	return textResult(false, fmt.Sprintf("%s is not active yet (status: %s). The human must complete consent.", provider, status))
 }
 
-func (s *Server) callGetCredential(id, args json.RawMessage) {
+func (s *Server) callGetCredential(args json.RawMessage) map[string]any {
 	// Authorization already ran in handleToolCall; get_credential is deny-by-default there.
 	provider := extractProvider(args)
 	if provider == "" {
-		s.toolResult(id, true, "provider is required")
-		return
+		return textResult(true, "provider is required")
 	}
 	s.sessionMu.Lock()
 	sess := s.session
 	s.sessionMu.Unlock()
 	if sess == nil {
-		s.toolResult(id, true, "no connection for provider "+provider)
-		return
+		return textResult(true, "no connection for provider "+provider)
 	}
 	c, ok := sess.GetConnection(provider)
 	if !ok {
-		s.toolResult(id, true, "no connection for provider "+provider+"; call request_access first")
-		return
+		return textResult(true, "no connection for provider "+provider+"; call request_access first")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	status, err := principal.CheckStatus(ctx, c.GatewayURL, c.ConnectionID)
 	if err != nil {
-		s.toolResult(id, true, "status check failed: "+err.Error())
-		return
+		return textResult(true, "status check failed: "+err.Error())
 	}
 	if !principal.IsActiveStatus(status) {
-		s.toolResult(id, true, "connection not active (status: "+status+")")
-		return
+		return textResult(true, "connection not active (status: "+status+")")
 	}
 	tok, err := principal.FetchToken(ctx, c.GatewayURL, c.ConnectionID)
 	if err != nil {
-		s.toolResult(id, true, "fetch token failed: "+err.Error())
-		return
+		return textResult(true, "fetch token failed: "+err.Error())
 	}
-	s.toolResult(id, false, tok)
+	return textResult(false, tok)
 }
