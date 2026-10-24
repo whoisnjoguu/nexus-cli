@@ -102,7 +102,7 @@ oldest pending request (or the most recently started one) is used.
 	c.Flags().StringVar(&decision, "decision", "", "Decision for <request-id>: once, session, always, or deny")
 	c.Flags().BoolVar(&web, "web", false, "Open the approvals web UI in a browser (one-time login link)")
 	c.Flags().BoolVar(&noOpen, "no-open", false, "With --web, print the URL instead of opening a browser")
-	c.Flags().IntVar(&pid, "pid", 0, "With --web, the process ID of the endpoint to open (see `nexus-cli approve --list`)")
+	c.Flags().IntVar(&pid, "pid", 0, "With --web, the process ID of the endpoint to open (see 'nexus-cli approve --list')")
 	c.Flags().BoolVarP(&quiet, "quiet", "q", false, "Do not ring the terminal bell when new requests arrive")
 	return c
 }
