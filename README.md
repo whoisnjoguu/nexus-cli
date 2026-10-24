@@ -162,10 +162,14 @@ tools:
     action: allow
     taints: ["db:read"] # stamps the session as having touched sensitive data
 
+  - match: { method: POST, path: "/v1/refunds/**" }
+    scope: refund:write
+    action: allow
+    one_time: true # allowed once per session, then denied (survives restarts)
+
   - match: { method: POST, path: "/v1/payouts/**" }
     scope: payout:write
     action: hitl
-    one_time: true # authorization consumed after a single use per session
 
   - match: { tool: execute_shell }
     action: deny
@@ -200,6 +204,82 @@ nexus-cli policy edit --gateway https://your-gateway.example.com
 ```
 
 Scopes are pulled live from the Gateway's catalog, so you check real provider scopes.
+
+The full reference — every field, matching semantics (including MCP tool arguments), evaluation
+order, taints, `one_time`, session grants, providers and egress — is in [docs/policy.md](docs/policy.md).
+
+### Which file is the policy?
+
+Every command resolves the policy the same way: `--policy` (when given) → `$NEXUS_POLICY` →
+`$NEXUS_HOME/policy.yaml` (if it exists; `~/.nexus/policy.yaml` by default) → `./nexus.yaml`.
+
+### Validation and `policy lint`
+
+Policy files are parsed strictly: an unknown key anywhere (including the `mcp:` and `audit:`
+sections) is an error with its line number, and so are unknown actions, malformed globs, unknown
+HTTP methods, `one_time` on a non-`allow` rule, `inject: true` without a `host`, empty taints and
+duplicate providers. `dev`, `run`, `mcp serve` and `policy test` refuse to load a file with errors.
+Warnings flag rules that load but probably don't do what you meant: never-matching or
+unreachable (shadowed) rules, `tool: "*"` / `host: "*"` allows, substring globs like `*get*`.
+
+```bash
+nexus-cli policy lint                    # human-readable; exit 1 on errors
+nexus-cli policy lint --json             # machine-readable
+nexus-cli policy lint --strict-warnings  # exit 1 on warnings too (CI)
+# error tools[2].action: unknown action "alow" (want allow|deny|hitl)
+```
+
+`nexus-cli doctor` shows the error and warning counts.
+
+### Hot reload
+
+`dev`, `run` and `mcp serve` re-read the policy when it changes (polled every second by mtime,
+size and SHA-256; `SIGHUP` forces a reload for `dev` and `mcp serve`). A file that fails to load
+is rejected and the current policy stays in force:
+
+```text
+[nexus] policy reloaded from nexus.yaml (sha256:3f2a9c1b7d4e)
+[nexus] policy reload failed: nexus.yaml: line 7: unknown field "acton" in a tools rule (keeping the current policy)
+```
+
+Every attempt is audited as tool `policy/reload` (`allow`/`deny`, target `path#sha256:<12 hex>`).
+Reloads keep taints and consumed `one_time` rules and clear "approve for this session" grants.
+`egress.passthrough`, `mcp:` and `audit:` changes need a restart. `--no-reload` disables it.
+Writes by nexus-cli itself (`policy edit`, "always allow" approvals) are atomic, so a reload never
+sees a half-written file.
+
+### Protecting the policy from the agent
+
+An agent that can edit its own policy isn't gated. Three layers:
+
+- **Built-in guard** (always on, can't be overridden by rules, grants or reloads): a tool call
+  whose arguments contain — anywhere, nested — a path inside the active policy file, the nexus home
+  (`~/.nexus`: keys, pin, state), the audit log directory or the pin file is denied with reason
+  `protected nexus file`. Relative paths (against the working directory), `..`, `~`, `file://` and
+  symlinks are resolved first; command strings like `sed -i … nexus.yaml` are split into words.
+  HTTP proxy requests are unaffected.
+- **Move it out of the workspace**: `dev`/`run` warn when the policy is inside the current
+  directory. `nexus-cli policy protect` moves it to `$NEXUS_HOME/policy.yaml` (mode 0600), which
+  then takes precedence over `./nexus.yaml` (`--keep` copies instead).
+- **Pin it**: `nexus-cli policy pin` records the file's SHA-256 in `$NEXUS_HOME/policy.pin`. While
+  pinned, `dev`/`run`/`mcp serve` refuse to start with — and hot reload refuses to load — a policy
+  whose hash differs (audited as `policy/pin`), until you review it and run `policy pin` again or
+  start with `--accept-policy-change`. Changes made through nexus-cli re-pin automatically.
+
+```bash
+nexus-cli policy protect      # → /home/you/.nexus/policy.yaml
+nexus-cli policy pin          # pinned /home/you/.nexus/policy.yaml sha256:… → ~/.nexus/policy.pin
+```
+
+### Persistent session state
+
+Single-use token ids, consumed `one_time` rules and session taints are stored under
+`$NEXUS_HOME/state/` (`jti.json`, `sessions.json`; dir 0700, files 0600, written atomically under a
+cross-process lock), so restarting `dev`/`run` doesn't make a spent token or a `one_time` rule
+usable again, and concurrent nexus-cli processes share them. Entries expire with the token / after
+the 12 h session idle TTL. `--ephemeral-state` keeps everything in memory. A corrupt state file is
+logged, moved aside to `*.corrupt` and treated as empty — a deliberate fail-open trade-off so a
+damaged file can't brick the gate; the replay guard fails closed on I/O errors.
 
 ## Identity
 
@@ -341,6 +421,9 @@ nexus-cli dev --single-use                # reject any token reuse
 nexus-cli dev --mitm on                   # HTTPS interception: auto (default) | on | off
 nexus-cli dev --approval-timeout 2m       # how long a call waits for a human (default 60s)
 nexus-cli dev --no-audit                  # disable the audit log
+nexus-cli dev --no-reload                 # don't hot-reload the policy
+nexus-cli dev --ephemeral-state           # keep replay/one_time/taint state in memory only
+nexus-cli dev --accept-policy-change      # accept (and re-pin) a policy that differs from its pin
 ```
 
 - Inbound `X-Nexus-*` headers are **always stripped** — identity comes only from a verified token.
@@ -576,6 +659,9 @@ eval "$(nexus-cli run --attach 127.0.0.1:8075 --print-env)"   # sets HTTP(S)_PRO
 | `nexus-cli mcp serve`      | Serve / aggregate MCP tool servers behind the policy   |
 | `nexus-cli policy edit`    | Interactive TUI policy editor (writes `nexus.yaml`)    |
 | `nexus-cli policy test`    | Dry-run a tool call against the policy                 |
+| `nexus-cli policy lint`    | Validate the policy (`--json`, `--strict-warnings`)    |
+| `nexus-cli policy protect` | Move the policy to `$NEXUS_HOME/policy.yaml` (0600)    |
+| `nexus-cli policy pin`     | Pin the policy's SHA-256; refuse unreviewed changes    |
 | `nexus-cli audit tail`     | Show recent decisions (`-f` to follow, filters)        |
 | `nexus-cli audit verify`   | Verify the audit hash chain, signatures and anchor     |
 | `nexus-cli audit head`     | Print the chain head to store as an off-machine anchor |
@@ -594,6 +680,8 @@ nexus-cli/
 ├── cmd/                 # Cobra command tree
 ├── external/            # embedded init scaffolds (nexus.yaml, mcp.json templates)
 ├── internal/
+│   ├── atomicfile/      # temp+rename file writes (policy, pin, state)
+│   ├── fslock/          # cross-process advisory file locks
 │   └── tui/             # Bubble Tea policy editor (nexus-cli policy edit)
 ├── packaging/npm/       # npx launcher (@whoisnjoguu/nexus-cli)
 ├── pkg/
@@ -604,7 +692,8 @@ nexus-cli/
 │   ├── hitl/            # approval broker, terminal prompt, first-answer-wins fan-out
 │   ├── jwt/             # Ed25519 signing, verification, keystore, replay guard, JWKS
 │   ├── mcp/             # MCP stdio server + upstream gateway + broker-access tools
-│   ├── policy/          # declarative least-privilege policy engine
+│   ├── policy/          # policy engine, validation, hot reload, guard, pinning, session state
+│   ├── state/           # expiring JSON state store under $NEXUS_HOME/state
 │   ├── principal/       # human identity + multi-provider connections via the Gateway
 │   ├── proxy/           # forward proxy, auth, CONNECT tunnelling + TLS interception
 │   └── sdk/             # embeddable Go gate + gating http.RoundTripper
