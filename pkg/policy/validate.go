@@ -331,7 +331,8 @@ func matchCovers(a, b Match) bool {
 	}
 	methodOK := a.Method == "" || a.Method == "*" || strings.EqualFold(a.Method, b.Method)
 	hostOK := coverField(a.Host, b.Host, hostMatch)
-	pathOK := coverField(a.Path, b.Path, pathMatch) ||
+	// Paths match case-sensitively, so unlike tools and hosts "/API" does not cover "/api".
+	pathOK := a.Path == "" || a.Path == b.Path || (b.Path != "" && !hasGlobMeta(b.Path) && pathMatch(a.Path, b.Path)) ||
 		(strings.HasSuffix(a.Path, "/**") && strings.HasSuffix(b.Path, "/**") &&
 			strings.HasPrefix(b.Path, strings.TrimSuffix(a.Path, "**")))
 	return methodOK && hostOK && pathOK

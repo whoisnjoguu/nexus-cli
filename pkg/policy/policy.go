@@ -3,8 +3,9 @@ package policy
 
 import (
 	"fmt"
+	"net"
 	"os"
-	"path/filepath"
+	"path"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -382,7 +383,7 @@ func toolMatch(pattern, tool string) bool {
 	pattern = strings.ToLower(pattern)
 	tool = strings.ToLower(tool)
 	if strings.Contains(pattern, "*") {
-		ok, err := filepath.Match(pattern, tool)
+		ok, err := path.Match(pattern, tool)
 		return err == nil && ok
 	}
 	return pattern == tool
@@ -402,7 +403,6 @@ func hasScope(have []string, want string) bool {
 func HostMatches(patterns []string, host string) bool { return hostAllowed(patterns, host) }
 
 func hostAllowed(allow []string, host string) bool {
-	host = stripPort(host)
 	for _, pat := range allow {
 		if hostMatch(pat, host) {
 			return true
@@ -411,18 +411,40 @@ func hostAllowed(allow []string, host string) bool {
 	return false
 }
 
-// hostMatch supports exact hosts and a single leading "*." wildcard label.
+// hostMatch supports exact hosts and a single leading "*." wildcard label. Hosts compare
+// case-insensitively, without their port and without a trailing root dot ("evil.com." is
+// "evil.com" to DNS, so it must hit the same rules). IP literals compare in canonical form, so
+// "[::1]:443" is "::1" and the IPv4-mapped "[::ffff:127.0.0.1]" is "127.0.0.1".
 func hostMatch(pattern, host string) bool {
-	pattern = stripPort(strings.ToLower(pattern))
-	host = stripPort(strings.ToLower(host))
+	pattern = normalizeHost(pattern)
+	host = normalizeHost(host)
+	if host == "" {
+		return false
+	}
 	if pattern == host {
 		return true
 	}
 	if strings.HasPrefix(pattern, "*.") {
 		suffix := pattern[1:] // ".github.com"
-		return strings.HasSuffix(host, suffix) && host != suffix[1:]
+		return len(host) > len(suffix) && strings.HasSuffix(host, suffix)
 	}
 	return false
+}
+
+func normalizeHost(h string) string {
+	h = strings.ToLower(h)
+	if host, _, err := net.SplitHostPort(h); err == nil {
+		h = host
+	} else if strings.HasPrefix(h, "[") && strings.HasSuffix(h, "]") {
+		h = h[1 : len(h)-1]
+	} else if net.ParseIP(h) == nil {
+		h = stripPort(h)
+	}
+	h = strings.TrimSuffix(h, ".")
+	if ip := net.ParseIP(h); ip != nil {
+		h = ip.String()
+	}
+	return h
 }
 
 func stripPort(host string) string {
@@ -433,14 +455,16 @@ func stripPort(host string) string {
 }
 
 // pathMatch supports "**" (any suffix) and "*" (single segment) glob semantics.
-func pathMatch(pattern, path string) bool {
-	if pattern == path {
+func pathMatch(pattern, p string) bool {
+	if pattern == p {
 		return true
 	}
 	if strings.HasSuffix(pattern, "/**") {
-		return strings.HasPrefix(path, strings.TrimSuffix(pattern, "**"))
+		return strings.HasPrefix(p, strings.TrimSuffix(pattern, "**"))
 	}
-	ok, err := filepath.Match(pattern, path)
+	// path.Match, not filepath.Match: on Windows the latter lets "*" cross "/" and treats "\"
+	// as a separator instead of an escape, so a rule would match more there than elsewhere.
+	ok, err := path.Match(pattern, p)
 	return err == nil && ok
 }
 
