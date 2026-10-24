@@ -77,6 +77,9 @@ func TestDevServesHealthAndShutsDown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
+	// cobra keeps the first context it hands a subcommand, so a rerun (-count>1) would otherwise
+	// inherit the previous run's cancelled context and stop serving immediately.
+	devCmd.SetContext(ctx)
 	go func() { done <- rootCmd.ExecuteContext(ctx) }()
 
 	re := regexp.MustCompile(`listening on (127\.0\.0\.1:\d+)`)
@@ -131,6 +134,7 @@ func TestDevWarnsOnNonLoopbackListen(t *testing.T) {
 	t.Cleanup(func() { rootCmd.SetOut(nil); rootCmd.SetErr(nil); rootCmd.SetArgs(nil) })
 
 	ctx, cancel := context.WithCancel(context.Background())
+	devCmd.SetContext(ctx)
 	done := make(chan error, 1)
 	go func() { done <- rootCmd.ExecuteContext(ctx) }()
 	deadline := time.Now().Add(5 * time.Second)
