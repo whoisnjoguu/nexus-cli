@@ -80,7 +80,7 @@ verifiable **dual-actor identity** (Agent + Human), human-in-the-loop approvals,
 - **One-command gating** — `nexus-cli run -- <agent>` puts any CLI agent or tool behind the gate: proxy, token, and CA trust are wired into its environment automatically.
 - **HTTPS interception** — with a local CA (`nexus-cli ca init`), path/method rules, `one_time`, taints, and `inject` apply to HTTPS too; pinned hosts can be passed through.
 - **Approve from anywhere** — answer prompts in the proxy's terminal or from another one with `nexus-cli approve`.
-- **Plug-in anywhere** — HTTP forward proxy, MCP stdio gateway (aggregates & gates upstream MCP servers), or embedded Go/Python SDK.
+- **Plug-in anywhere** — HTTP forward proxy, MCP gateway over stdio or Streamable HTTP (aggregates & gates upstream MCP servers), or embedded Go/Python SDK.
 
 ## Install
 
@@ -414,6 +414,20 @@ mcp:
 
 Then a host replaces N server entries with a single `nexus-cli mcp serve`.
 
+- **Argument-aware rules** — match tool-call arguments (`match: {tool: "fs__write_file", args: {path: "/workspace/*"}}`);
+  a `url`/`uri`/`endpoint` argument is also checked against the egress allowlist.
+- **Full passthrough** — resources, prompts, completion, logging, progress, cancellation and
+  `list_changed` notifications; upstream sampling (policy-gated), elicitation and roots requests reach the client.
+- **Concurrent and supervised** — calls run in parallel with a per-call timeout (`--call-timeout`);
+  crashed upstreams fail their pending calls and restart with backoff (`no_restart: true` to opt out).
+- **stdio or Streamable HTTP** upstreams (`url:` + `headers:` with `${ENV}` expansion), and
+  `--http 127.0.0.1:8765` to serve the gateway itself over HTTP with a bearer token.
+- **Approvals** — HITL calls use MCP elicitation when the client supports it, and are always
+  answerable from another terminal with `nexus-cli approve`.
+- `nexus-cli mcp status` shows running gateways and upstream health (`doctor` flags down upstreams).
+
+See [docs/mcp.md](docs/mcp.md) for the full reference.
+
 ### Agents request provider access (secretless)
 
 When started with a Gateway (`--gateway`, `NEXUS_GATEWAY_URL`, or your login), the MCP server exposes
@@ -574,6 +588,7 @@ eval "$(nexus-cli run --attach 127.0.0.1:8075 --print-env)"   # sets HTTP(S)_PRO
 | `nexus-cli ca fingerprint` | Print the CA certificate's SHA-256 fingerprint         |
 | `nexus-cli ca install`     | Trust the CA in the OS store (`uninstall` to remove)   |
 | `nexus-cli mcp serve`      | Serve / aggregate MCP tool servers behind the policy   |
+| `nexus-cli mcp status`     | Show running MCP gateways and upstream health          |
 | `nexus-cli policy edit`    | Interactive TUI policy editor (writes `nexus.yaml`)    |
 | `nexus-cli policy test`    | Dry-run a tool call against the policy                 |
 | `nexus-cli audit tail`     | Show recent decisions (`-f` to follow, filters)        |

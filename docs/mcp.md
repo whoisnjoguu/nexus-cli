@@ -18,49 +18,49 @@ Upstreams live under `mcp.upstreams` in `nexus.yaml`:
 ```yaml
 mcp:
   upstreams:
-    - name: fs                       # tools are exposed as fs__<tool>; prompts as fs__<prompt>
+    - name: fs # tools are exposed as fs__<tool>; prompts as fs__<prompt>
       command: npx
       args: ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
-      env: { NODE_OPTIONS: "--max-old-space-size=512" }   # added to the inherited environment
-      cwd: /workspace                # working directory of the process (optional)
-    - name: remote                   # Streamable HTTP upstream
+      env: { NODE_OPTIONS: "--max-old-space-size=512" } # added to the inherited environment
+      cwd: /workspace # working directory of the process (optional)
+    - name: remote # Streamable HTTP upstream
       url: https://mcp.example.com/mcp
       headers:
-        Authorization: "Bearer ${EXAMPLE_MCP_TOKEN}"     # ${VAR} is expanded from the environment
+        Authorization: "Bearer ${EXAMPLE_MCP_TOKEN}" # ${VAR} is expanded from the environment
     - name: old
       command: some-server
-      disabled: true                 # keep the entry but don't start it
+      disabled: true # keep the entry but don't start it
     - name: flaky
       command: flaky-server
-      no_restart: true               # leave it down if it exits
+      no_restart: true # leave it down if it exits
 ```
 
-| Field      | Meaning                                                                                      |
-| ---------- | -------------------------------------------------------------------------------------------- |
-| `name`     | Required, unique, no `__`. Used as the tool/prompt prefix and as the policy `provider`.        |
-| `command`  | Executable for a stdio upstream (exactly one of `command` / `url`).                          |
-| `args`     | Arguments for `command`.                                                                     |
-| `env`      | Extra environment variables for the process (the gateway's environment is inherited).       |
-| `cwd`      | Working directory for the process.                                                           |
-| `url`      | Endpoint of a Streamable HTTP upstream.                                                      |
-| `headers`  | Extra HTTP headers; `${VAR}` references are expanded so tokens need not live in the yaml.    |
-| `disabled` | Skip this upstream.                                                                          |
+| Field        | Meaning                                                                                   |
+| ------------ | ----------------------------------------------------------------------------------------- |
+| `name`       | Required, unique, no `__`. Used as the tool/prompt prefix and as the policy `provider`.   |
+| `command`    | Executable for a stdio upstream (exactly one of `command` / `url`).                       |
+| `args`       | Arguments for `command`.                                                                  |
+| `env`        | Extra environment variables for the process (the gateway's environment is inherited).     |
+| `cwd`        | Working directory for the process.                                                        |
+| `url`        | Endpoint of a Streamable HTTP upstream.                                                   |
+| `headers`    | Extra HTTP headers; `${VAR}` references are expanded so tokens need not live in the yaml. |
+| `disabled`   | Skip this upstream.                                                                       |
 | `no_restart` | Leave this upstream `down` when it exits instead of restarting it (see `--no-restart`).   |
 
 ### `mcp serve` flags
 
-| Flag                         | Default                | Meaning                                                                    |
-| ---------------------------- | ---------------------- | -------------------------------------------------------------------------- |
-| `--policy`                   | `nexus.yaml`           | Policy + upstream config.                                                  |
-| `--strict`                   | off                    | Every tool call needs approval.                                            |
-| `--http ADDR`                | (stdio)                | Serve Streamable HTTP at `http://ADDR/mcp` instead of stdio.               |
-| `--stdio`                    | off                    | With `--http`, serve stdio as well.                                        |
-| `--http-token`               | generated              | Bearer token for HTTP clients. Generated tokens are printed to stderr and written to `<nexus home>/mcp/http.token` (0600, removed on exit). |
-| `--http-allowed-host`        | none                   | Extra `Host` header values accepted (needed when binding a non-loopback address behind a name). |
-| `--call-timeout`             | `5m`                   | Per-request timeout for anything forwarded to an upstream. On timeout the upstream gets `notifications/cancelled` and the client gets an error. |
-| `--approval-timeout`         | `2m`                   | How long a HITL prompt waits before it is treated as a denial.             |
-| `--no-restart`               | off                    | Don't restart upstreams that exit.                                         |
-| `--agent-id`, `--key`, `--gateway`, `--no-audit` |    | As before (identity, signing key, broker gateway, audit).                  |
+| Flag                                             | Default      | Meaning                                                                                                                                         |
+| ------------------------------------------------ | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--policy`                                       | `nexus.yaml` | Policy + upstream config.                                                                                                                       |
+| `--strict`                                       | off          | Every tool call needs approval.                                                                                                                 |
+| `--http ADDR`                                    | (stdio)      | Serve Streamable HTTP at `http://ADDR/mcp` instead of stdio.                                                                                    |
+| `--stdio`                                        | off          | With `--http`, serve stdio as well.                                                                                                             |
+| `--http-token`                                   | generated    | Bearer token for HTTP clients. Generated tokens are printed to stderr and written to `<nexus home>/mcp/http.token` (0600, removed on exit).     |
+| `--http-allowed-host`                            | none         | Extra `Host` header values accepted (needed when binding a non-loopback address behind a name).                                                 |
+| `--call-timeout`                                 | `5m`         | Per-request timeout for anything forwarded to an upstream. On timeout the upstream gets `notifications/cancelled` and the client gets an error. |
+| `--approval-timeout`                             | `2m`         | How long a HITL prompt waits before it is treated as a denial.                                                                                  |
+| `--no-restart`                                   | off          | Don't restart upstreams that exit.                                                                                                              |
+| `--agent-id`, `--key`, `--gateway`, `--no-audit` |              | As before (identity, signing key, broker gateway, audit).                                                                                       |
 
 `<nexus home>` is `$NEXUS_HOME` or `~/.nexus`.
 
@@ -70,12 +70,12 @@ Upstream tool calls are evaluated as `tool: <upstream>__<tool>` with the tool ar
 to argument rules. Other gated MCP methods use the method name as the tool and the upstream name as
 the provider:
 
-| Traffic                                | `tool`                    | `provider` | `args`                    |
-| -------------------------------------- | ------------------------- | ---------- | ------------------------- |
-| `tools/call`                           | `fs__write_file`          | –          | the call arguments        |
-| `resources/read`                       | `resources/read`          | upstream   | `{uri}`                   |
-| `prompts/get`                          | `prompts/get`             | upstream   | `{name, arguments}`       |
-| upstream `sampling/createMessage`      | `sampling/createMessage`  | upstream   | the sampling params       |
+| Traffic                           | `tool`                   | `provider` | `args`              |
+| --------------------------------- | ------------------------ | ---------- | ------------------- |
+| `tools/call`                      | `fs__write_file`         | –          | the call arguments  |
+| `resources/read`                  | `resources/read`         | upstream   | `{uri}`             |
+| `prompts/get`                     | `prompts/get`            | upstream   | `{name, arguments}` |
+| upstream `sampling/createMessage` | `sampling/createMessage` | upstream   | the sampling params |
 
 The default policy allows `resources/read` and `prompts/get` and sends `sampling/createMessage`
 to a human: an upstream asking the host's LLM to generate text is a prompt-injection vector.
@@ -89,11 +89,11 @@ tools:
   - match: { tool: "fs__write_file", args: { path: "/workspace/**" } }
     action: allow
   - match: { tool: "fs__write_file" }
-    action: deny                       # writes anywhere else
+    action: deny # writes anywhere else
   - match: { tool: "db__query", args: { sql: "!*drop*" } }
-    action: allow                      # anything not containing DROP (case-insensitive)
+    action: allow # anything not containing DROP (case-insensitive)
   - match: { tool: "fs__edit_file", args: { "options.mode": "dry-run" } }
-    action: allow                      # dot paths reach into nested objects
+    action: allow # dot paths reach into nested objects
 ```
 
 - **Keys** are dot paths into the arguments object (`path`, `options.mode`).
@@ -102,7 +102,7 @@ tools:
   (`filepath.Clean`), `~` expands to your home directory, and `**` spans directories. So
   `/workspace/../etc/passwd` does **not** match `/workspace/**`. Path patterns are case-sensitive;
   other patterns are case-insensitive.
-- **Arrays** match if *any* element matches; a negated pattern requires that *no* element matches.
+- **Arrays** match if _any_ element matches; a negated pattern requires that _no_ element matches.
 - Numbers and booleans are compared via their string form (`"3"`, `"true"`).
 - A missing key never matches (also for negated patterns), so `args` can only narrow a rule.
 - `args` is an extra constraint on a tool rule; a match with nothing else in it never matches.

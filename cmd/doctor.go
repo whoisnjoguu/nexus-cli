@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/whoisnjoguu/nexus-cli/pkg/audit"
 	"github.com/whoisnjoguu/nexus-cli/pkg/jwt"
+	"github.com/whoisnjoguu/nexus-cli/pkg/mcp"
 )
 
 var doctorPolicy string
@@ -111,11 +113,56 @@ var doctorCmd = &cobra.Command{
 			}
 		}
 
+		for _, r := range doctorMCPChecks() {
+			if !r.pass {
+				ok = false
+			}
+			check(r.pass, r.msg)
+		}
+
 		if !ok {
 			return fmt.Errorf("doctor found issues")
 		}
 		return nil
 	},
+}
+
+type doctorResult struct {
+	pass bool
+	msg  string
+}
+
+// doctorMCPChecks reports running MCP gateways and flags upstream servers that are down.
+// It reports nothing when no gateway is running.
+func doctorMCPChecks() []doctorResult {
+	dir, err := mcp.StatusDir()
+	if err != nil {
+		return nil
+	}
+	files, err := mcp.ReadStatusFiles(dir)
+	if err != nil {
+		return []doctorResult{{false, "MCP status unreadable: " + err.Error()}}
+	}
+	files, _ = mcp.CleanStatusFiles(files)
+	var out []doctorResult
+	for _, f := range files {
+		var bad []string
+		for _, u := range f.Upstreams {
+			if u.State == "down" || u.State == "restarting" {
+				msg := u.Name + " " + u.State
+				if u.LastError != "" {
+					msg += " (" + mcpOneLine(u.LastError) + ")"
+				}
+				bad = append(bad, msg)
+			}
+		}
+		if len(bad) > 0 {
+			out = append(out, doctorResult{false, fmt.Sprintf("MCP gateway pid %d: upstream %s — see: nexus-cli mcp status", f.PID, strings.Join(bad, ", "))})
+		} else {
+			out = append(out, doctorResult{true, fmt.Sprintf("MCP gateway pid %d running with %d upstream(s) healthy", f.PID, len(f.Upstreams))})
+		}
+	}
+	return out
 }
 
 func check(pass bool, msg string) {
