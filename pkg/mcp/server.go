@@ -379,11 +379,11 @@ func (s *Server) authorizeToolProvider(name, provider string) (bool, string) {
 			case hitl.Once:
 				return true, "approved once"
 			case hitl.Session:
-				s.engine.GrantSession(req)
+				s.engine.GrantSession(req, dec)
 				return true, "approved for session"
 			case hitl.Always:
-				s.engine.GrantSession(req)
-				s.persistAllow(req)
+				s.engine.GrantSession(req, dec)
+				s.persistAllow(req, dec.Rule)
 				return true, "approved & persisted"
 			default:
 				return false, "denied at human-in-the-loop"
@@ -404,11 +404,11 @@ func (s *Server) authorizeToolProvider(name, provider string) (bool, string) {
 }
 
 // persistAllow writes an "always allow" rule for this tool/provider via the configured callback.
-func (s *Server) persistAllow(req policy.Request) {
+func (s *Server) persistAllow(req policy.Request, matched *policy.Rule) {
 	if s.persistRule == nil {
 		return
 	}
-	s.persistRule(policy.Rule{Match: policy.Match{Tool: req.Tool, Provider: req.Provider}, Action: policy.ActionAllow})
+	s.persistRule(policy.PersistedAllow(policy.Match{Tool: req.Tool, Provider: req.Provider}, matched))
 }
 
 func (s *Server) recordTool(name, provider string, allowed bool, reason string) {

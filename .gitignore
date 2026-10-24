@@ -14,3 +14,6 @@ coverage.*
 .idea/
 .vscode/
 .claude/
+
+# Demo recorder artifacts
+demo/

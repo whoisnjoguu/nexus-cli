@@ -97,10 +97,8 @@ func (p *ProxyServer) handleIntercept(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	sessionID := jti
-	if sessionID == "" {
-		sessionID = agentID + "|" + actAsUser
-	}
+	// Tokens are single-use, so the session must outlive any one jti or taint and grants would reset per request.
+	sessionID := agentID + "|" + actAsUser
 
 	// HTTPS CONNECT tunnels can't be inspected per-request; decide on the tunnel host itself.
 	if r.Method == http.MethodConnect {
@@ -186,14 +184,14 @@ func (p *ProxyServer) enforce(w http.ResponseWriter, dec policy.Decision, req po
 		case hitl.Session:
 			reason = "approved for session"
 			if p.cfg.Engine != nil {
-				p.cfg.Engine.GrantSession(req)
+				p.cfg.Engine.GrantSession(req, dec)
 			}
 		case hitl.Always:
 			reason = "approved & persisted"
 			if p.cfg.Engine != nil {
-				p.cfg.Engine.GrantSession(req)
+				p.cfg.Engine.GrantSession(req, dec)
 			}
-			p.persistAllow(req)
+			p.persistAllow(req, dec.Rule)
 		}
 	case policy.ActionDeny:
 		allowed = false
@@ -206,8 +204,9 @@ func (p *ProxyServer) enforce(w http.ResponseWriter, dec policy.Decision, req po
 	return allowed
 }
 
-// persistAllow writes an "always allow" rule for this request shape via the configured callback.
-func (p *ProxyServer) persistAllow(req policy.Request) {
+// persistAllow writes an "always allow" rule for exactly the request the human saw, keeping the
+// matched rule's scope, taints and one-time constraints so persisting never weakens them.
+func (p *ProxyServer) persistAllow(req policy.Request, matched *policy.Rule) {
 	if p.cfg.OnPersistRule == nil {
 		return
 	}
@@ -215,9 +214,9 @@ func (p *ProxyServer) persistAllow(req policy.Request) {
 	if req.Tool != "" {
 		m = policy.Match{Tool: req.Tool, Provider: req.Provider}
 	} else {
-		m = policy.Match{Method: req.Method, Host: req.Host}
+		m = policy.Match{Method: req.Method, Host: req.Host, Path: req.Path}
 	}
-	p.cfg.OnPersistRule(policy.Rule{Match: m, Action: policy.ActionAllow})
+	p.cfg.OnPersistRule(policy.PersistedAllow(m, matched))
 }
 
 func (p *ProxyServer) record(jti, agentID, actAsUser, method, target string, scopes []string, allowed bool, reason string) {

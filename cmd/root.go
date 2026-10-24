@@ -17,7 +17,7 @@ ephemeral dual-actor token minting and interactive Human-in-the-Loop proxy contr
 		cmd.SilenceUsage = true
 	},
 }
-`
+
 func Execute() error {
 	return rootCmd.Execute()
 }

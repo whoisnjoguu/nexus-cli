@@ -1,6 +1,6 @@
 {
   "name": "@whoisnjoguu/nexus-cli",
-  "version": "0.0.0",
+  "version": "0.1.0-beta.1",
   "description": "Zero-trust security sidecar, identity broker, and MCP gateway for autonomous agents.",
   "bin": {
     "nexus-cli": "bin/nexus-cli.js"
