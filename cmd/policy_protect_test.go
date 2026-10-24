@@ -263,7 +263,7 @@ func TestDevWorkspaceWarningAndPinRefusal(t *testing.T) {
 	}
 	_, _, errb, stop := startDevWith(t, "--require-auth=false", "--no-audit", "--key", filepath.Join(t.TempDir(), "k"))
 	_ = stop()
-	want := "[nexus] warning: policy ./nexus.yaml is inside the agent's workspace — the agent could edit it; move it with 'nexus-cli policy protect' or rely on the built-in guard"
+	want := "[nexus] warning: policy ." + string(filepath.Separator) + "nexus.yaml is inside the agent's workspace — the agent could edit it; move it with 'nexus-cli policy protect' or rely on the built-in guard"
 	if !strings.Contains(errb.String(), want) {
 		t.Fatalf("stderr = %q", errb.String())
 	}

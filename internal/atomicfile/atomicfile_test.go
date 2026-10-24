@@ -74,6 +74,7 @@ func TestWriteNeverPartiallyRead(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		defer close(stop)
 		for i := 0; i < 50; i++ {
 			data := a
 			if i%2 == 0 {
@@ -84,7 +85,6 @@ func TestWriteNeverPartiallyRead(t *testing.T) {
 				return
 			}
 		}
-		close(stop)
 	}()
 	for {
 		select {

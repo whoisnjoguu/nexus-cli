@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -101,7 +102,7 @@ func TestValidateTempDir(t *testing.T) {
 	tmp := filepath.Dir(cfg.Policy)
 	// Policy inside a temp dir is refused.
 	cfg2 := cfg
-	cfg2.Executable = "/usr/local/bin/nexus-cli"
+	cfg2.Executable = filepath.Join(filepath.Dir(tmp), "durable", "nexus-cli")
 	_, err := Validate(cfg2, ValidateOptions{TempDirs: []string{tmp}})
 	if err == nil || !strings.Contains(err.Error(), "refusing") || !strings.Contains(err.Error(), "policy") {
 		t.Fatalf("policy in temp dir: err = %v", err)
@@ -205,6 +206,9 @@ func assertCalls(t *testing.T, what string, got []string, want ...string) {
 
 func newTestManager(t *testing.T, goos string) (Manager, *fakeRunner, Options) {
 	t.Helper()
+	if runtime.GOOS == "windows" && goos != "windows" {
+		t.Skip("systemd/launchd managers are only used on unix hosts")
+	}
 	root := t.TempDir()
 	f := newFake()
 	o := Options{

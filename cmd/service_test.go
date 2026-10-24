@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -47,6 +48,9 @@ func (f *svcFakeRunner) Stream(ctx context.Context, w io.Writer, name string, ar
 // setupServiceTest isolates HOME/NEXUS_HOME/XDG_CONFIG_HOME and the service hooks.
 func setupServiceTest(t *testing.T, goos string) (*svcFakeRunner, string) {
 	t.Helper()
+	if runtime.GOOS == "windows" && goos != "windows" {
+		t.Skip("systemd/launchd definitions are only installed from unix hosts")
+	}
 	root := t.TempDir()
 	t.Setenv("HOME", filepath.Join(root, "home"))
 	t.Setenv("USERPROFILE", filepath.Join(root, "home"))
@@ -58,7 +62,11 @@ func setupServiceTest(t *testing.T, goos string) (*svcFakeRunner, string) {
 	oldGOOS, oldExe, oldRunner, oldTmp, oldWait, oldDisc, oldLinger, oldPort :=
 		serviceGOOS, serviceExecutable, serviceRunner, serviceTempDirs, serviceHealthWait, serviceDiscover, serviceLingerCheck, servicePortCheck
 	serviceGOOS = goos
-	serviceExecutable = func() (string, error) { return "/opt/nexus tools/bin/nexus-cli", nil }
+	exe := "/opt/nexus tools/bin/nexus-cli"
+	if runtime.GOOS == "windows" {
+		exe = filepath.Join(root, "nexus tools", "bin", "nexus-cli.exe")
+	}
+	serviceExecutable = func() (string, error) { return exe, nil }
 	serviceRunner = f
 	serviceTempDirs = []string{}
 	serviceHealthWait = 2 * time.Second
@@ -119,7 +127,7 @@ func TestServiceInstallDryRunLinux(t *testing.T) {
 	}
 }
 
-func TestServiceInstallDryRunDarwinWindows(t *testing.T) {
+func TestServiceInstallDryRunDarwin(t *testing.T) {
 	_, root := setupServiceTest(t, "darwin")
 	policy := filepath.Join(root, "p&q", "nexus.yaml")
 	out, _, err := runServiceCmd(t, "install", "--dry-run", "--policy", policy)
@@ -135,9 +143,12 @@ func TestServiceInstallDryRunDarwinWindows(t *testing.T) {
 			t.Errorf("darwin dry-run lacks %q:\n%s", want, out)
 		}
 	}
+}
 
-	serviceGOOS = "windows"
-	out, _, err = runServiceCmd(t, "install", "--dry-run", "--policy", policy)
+func TestServiceInstallDryRunWindows(t *testing.T) {
+	_, root := setupServiceTest(t, "windows")
+	policy := filepath.Join(root, "p&q", "nexus.yaml")
+	out, _, err := runServiceCmd(t, "install", "--dry-run", "--policy", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +179,7 @@ func TestServiceInstallRelativePolicyMadeAbsolute(t *testing.T) {
 }
 
 func TestServiceInstallRefusals(t *testing.T) {
-	_, root := setupServiceTest(t, "linux")
+	_, root := setupServiceTest(t, runtime.GOOS)
 	policy := filepath.Join(root, "nexus.yaml")
 
 	_, _, err := runServiceCmd(t, "install", "--dry-run", "--policy", policy, "--listen", "0.0.0.0:8075")
@@ -307,7 +318,7 @@ func TestServiceNameFlag(t *testing.T) {
 }
 
 func TestServiceInstallPortInUse(t *testing.T) {
-	_, root := setupServiceTest(t, "linux")
+	_, root := setupServiceTest(t, runtime.GOOS)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"status":"ok","service":"nexus-cli","mitm":"off"}`)
 	}))

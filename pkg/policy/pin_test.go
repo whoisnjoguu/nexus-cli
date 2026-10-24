@@ -36,6 +36,7 @@ func TestPinRoundTrip(t *testing.T) {
 		t.Fatalf("message = %v", err)
 	}
 	// Relative and absolute forms are the same pin.
+	t.Chdir(filepath.Dir(a)) // same volume as a, so a relative path exists on Windows too
 	wd, _ := os.Getwd()
 	rel, _ := filepath.Rel(wd, a)
 	if sum, ok, _ := ReadPin(pinFile, rel); !ok || sum != Sum([]byte("A")) {

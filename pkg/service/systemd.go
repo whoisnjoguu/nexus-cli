@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -84,7 +85,7 @@ func SystemdUnit(cfg Config) string {
 func systemdWritablePaths(cfg Config) []string {
 	var out []string
 	seen := map[string]bool{}
-	for _, p := range []string{cfg.NexusHome, filepath.Dir(cfg.Policy)} {
+	for _, p := range []string{cfg.NexusHome, path.Dir(cfg.Policy)} {
 		if p == "" || seen[p] {
 			continue
 		}
