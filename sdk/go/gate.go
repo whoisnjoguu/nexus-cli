@@ -4,6 +4,7 @@ package sdk
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/whoisnjoguu/nexus-cli/pkg/audit"
@@ -21,6 +22,19 @@ type ToolCall struct {
 	Path      string
 	Tool      string
 	Scopes    []string
+	// Args are the tool-call arguments, matched by policy args constraints.
+	Args map[string]any
+}
+
+func (c ToolCall) argsJSON() json.RawMessage {
+	if len(c.Args) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(c.Args)
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 // Decision is the SDK's authorization outcome.
@@ -81,6 +95,7 @@ func (g *LocalGate) Authorize(ctx context.Context, call ToolCall) (Decision, err
 		Path:      call.Path,
 		Tool:      call.Tool,
 		Scopes:    call.Scopes,
+		Args:      call.Args,
 	})
 
 	allowed := false
