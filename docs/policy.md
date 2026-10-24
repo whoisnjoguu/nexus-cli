@@ -55,7 +55,8 @@ mcp: # MCP gateway upstreams (see docs/mcp.md)
   upstreams: [...]
 
 audit: # audit log settings (see docs/audit.md)
-  path: ~/.nexus/audit.jsonl
+  path: /var/log/nexus/audit.jsonl # absolute; "~" is NOT expanded here
+  sign: true
 ```
 
 ### Top-level fields
@@ -361,5 +362,5 @@ Writes made through nexus-cli (`policy edit`, "always allow" approvals) re-pin a
 | `nexus-cli policy protect [--keep]`                               | Move the policy to `$NEXUS_HOME/policy.yaml`.      |
 | `nexus-cli policy pin [--remove]`                                 | Pin the policy's SHA-256.                          |
 
-All accept `--policy`. `dev` and `run` also take `--no-reload`, `--ephemeral-state` and
-`--accept-policy-change`.
+All accept `--policy`. `dev`, `run` and `mcp serve` also take `--no-reload`, `--ephemeral-state`
+and `--accept-policy-change`.

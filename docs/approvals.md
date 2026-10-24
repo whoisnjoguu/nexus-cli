@@ -46,8 +46,9 @@ The interactive watcher discovers every running gateway, shows the oldest pendin
 new request arrives.
 
 Gateways advertise themselves with 0600 discovery files in `$NEXUS_HOME/control/` (default
-`~/.nexus/control/`). Each file holds the loopback address and a random bearer token for that
-gateway's control API.
+`~/.nexus/control/`). Each file holds the loopback address and two random tokens for that
+gateway's control API: the admin `token` used by `nexus-cli approve`, and a `check_token` that only
+works for SDK decisions (see [Security model](#security-model)).
 
 ## Web UI
 
@@ -80,6 +81,11 @@ discovery file, and any request that carries `Authorization` must also:
 
 - use the exact `Host` `127.0.0.1:<port>`;
 - send no `Origin` header, which shuts out browsers.
+
+The check-only token (`check_token`, which `nexus-cli run` hands to its child as
+`NEXUS_CONTROL_TOKEN`) is accepted only on `GET /v1/status`, `POST /v1/check` and
+`GET /v1/check/{id}`. Every approvals route answers it with `403`, so an agent under `run` cannot list
+or decide its own requests through the API.
 
 Browsers can't send that bearer token from a link, so the UI uses a separate cookie session:
 
@@ -136,6 +142,10 @@ All request fields are agent-controlled, so the page renders them as text only, 
 | `GET /v1/approvals`                    | bearer or cookie | Pending requests (`?wait=&since=` long-poll)                       |
 | `POST /v1/approvals/{id}`              | bearer or cookie | `{"decision":"once\|session\|always\|deny"}`                       |
 | `GET /v1/status`                       | bearer or cookie | Endpoint info and pending count                                    |
+
+"bearer" means the admin `token` from the discovery file. The check-only token gets `403` on every
+route above except `GET /v1/status`. The SDK decision routes (`POST /v1/check`,
+`GET /v1/check/{id}`) are documented in [sdk.md](sdk.md).
 
 Each SSE event's `data` is a JSON object: `{type, request, decision, by, at}`.
 

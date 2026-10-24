@@ -33,7 +33,8 @@ mode `0600`:
 {
   "pid": 4242,
   "addr": "127.0.0.1:49731",
-  "token": "<control bearer token>",
+  "token": "<admin control token>",
+  "check_token": "<check-only control token>",
   "kind": "dev",
   "started": "2025-01-01T10:00:00Z",
   "listen": "127.0.0.1:8075",

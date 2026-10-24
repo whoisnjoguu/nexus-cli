@@ -1,19 +1,20 @@
 # Audit log
 
-Every authorization decision made by `nexus-cli dev`, `nexus-cli mcp serve` and the SDK gate is
-appended to a hash-chained JSONL log. This document covers the format, what it protects
+Every authorization decision made by `nexus-cli dev`, `nexus-cli run`, `nexus-cli mcp serve`
+(including SDK checks sent to their control API, see [sdk.md](sdk.md)) and the in-process Go
+`LocalGate` is appended to a hash-chained JSONL log. This document covers the format, what it protects
 against, and how to operate it.
 
 ## Threat model
 
-| Attacker | Can they rewrite history undetected? | What catches them |
-| --- | --- | --- |
-| Someone who edits / deletes / reorders lines by hand | No | `audit verify` (hash chain) |
-| Someone who strips signatures from recent entries | No | `audit verify` (signed → unsigned downgrade is an error) |
-| Someone with a different signing key | No | `audit verify` (unknown key id / signature mismatch) |
+| Attacker                                                                  | Can they rewrite history undetected?                                                                      | What catches them                                          |
+| ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Someone who edits / deletes / reorders lines by hand                      | No                                                                                                        | `audit verify` (hash chain)                                |
+| Someone who strips signatures from recent entries                         | No                                                                                                        | `audit verify` (signed → unsigned downgrade is an error)   |
+| Someone with a different signing key                                      | No                                                                                                        | `audit verify` (unknown key id / signature mismatch)       |
 | **A process running as your OS user** (including the agent being audited) | **Yes, locally** – it can read `audit.key`, rewrite the files, recompute the chain and re-sign everything | An **anchor** stored off the machine, or a **remote sink** |
 
-The hash chain and signatures make tampering *evident* only relative to something the
+The hash chain and signatures make tampering _evident_ only relative to something the
 attacker cannot also rewrite. Locally, anybody with your UID can recompute everything. The two
 mechanisms that move trust off the box are:
 
@@ -32,16 +33,16 @@ on a different account or a dedicated host running the proxy).
 
 One JSON object per line. Fields:
 
-| Field | Notes |
-| --- | --- |
-| `seq` | Monotonic sequence number, continuous across rotation (absent on entries written before v2; those are numbered by position) |
-| `ts` | UTC time |
-| `jti`, `agent`, `act_as`, `tool`, `target`, `scopes`, `decision`, `reason` | Decision context |
-| `session`, `rule`, `args_hash`, `source` | Optional: session id, matched rule summary, sha256 of request params/args (`audit.HashArgs`), decision source (`policy`, `hitl`, `session-grant`, …) |
-| `key_id` | First 16 hex chars of sha256(public key) of the signer |
-| `prev_hash` | `hash` of the previous entry (`""` for the very first) |
-| `hash` | hex sha256 of the entry's JSON with `hash` and `sig` set empty |
-| `sig` | base64 Ed25519 signature over the `hash` string |
+| Field                                                                      | Notes                                                                                                                                                |
+| -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `seq`                                                                      | Monotonic sequence number, continuous across rotation (absent on entries written before v2; those are numbered by position)                          |
+| `ts`                                                                       | UTC time                                                                                                                                             |
+| `jti`, `agent`, `act_as`, `tool`, `target`, `scopes`, `decision`, `reason` | Decision context                                                                                                                                     |
+| `session`, `rule`, `args_hash`, `source`                                   | Optional: session id, matched rule summary, sha256 of request params/args (`audit.HashArgs`), decision source (`policy`, `hitl`, `session-grant`, …) |
+| `key_id`                                                                   | First 16 hex chars of sha256(public key) of the signer                                                                                               |
+| `prev_hash`                                                                | `hash` of the previous entry (`""` for the very first)                                                                                               |
+| `hash`                                                                     | hex sha256 of the entry's JSON with `hash` and `sig` set empty                                                                                       |
+| `sig`                                                                      | base64 Ed25519 signature over the `hash` string                                                                                                      |
 
 All new fields are `omitempty`, so logs written by older versions hash and verify unchanged.
 
@@ -80,7 +81,9 @@ nexus-cli audit export --format csv --since 24h > decisions.csv
 nexus-cli audit keygen                            # create/print the audit signing public key
 ```
 
-`--file` points any command at a different active log. CSV exports prefix cells starting with
+The `audit` commands read the log named by `--file`, else `audit.path` of the active policy file
+(same lookup as `--policy` elsewhere: `$NEXUS_POLICY`, `$NEXUS_HOME/policy.yaml`, `./nexus.yaml`),
+else `$NEXUS_HOME/audit.jsonl`. CSV exports prefix cells starting with
 `= + - @` with `'` to prevent spreadsheet formula injection.
 
 ### Anchoring workflow
@@ -93,25 +96,30 @@ nexus-cli audit head --json >> anchors.jsonl && git commit -am "audit anchor" &&
 nexus-cli audit verify --anchor "$(tail -1 anchors.jsonl | jq -r .hash)" --require-signed
 ```
 
-## Configuration (for nexus.yaml)
+## Configuration (`audit:` in nexus.yaml)
 
-`audit.Config` has YAML tags so it can be embedded as an `audit:` block:
+`dev`, `run` and `mcp serve` open the log described by the policy's `audit:` block (`--no-audit`
+disables it). Changes to this block need a restart; hot reload does not apply them.
 
 ```yaml
 audit:
-  max_bytes: 10485760        # 0 = default 10 MiB, negative = never rotate
-  fsync: true                # default true
-  sign: true                 # load/create $NEXUS_HOME/audit.key (key_path overrides)
+  path: /var/log/nexus/audit.jsonl # default $NEXUS_HOME/audit.jsonl; absolute — "~" is not expanded
+  key_path: /secure/nexus/audit.key # default $NEXUS_HOME/audit.key (only used with sign: true)
+  max_bytes: 10485760 # 0 = default 10 MiB, negative = never rotate
+  fsync: true # default true
+  sign: true # load/create $NEXUS_HOME/audit.key (key_path overrides)
   sinks:
     - type: webhook
       url: https://siem.example.com/ingest
       headers:
-        Authorization: "Bearer ${SIEM_TOKEN}"   # ${ENV} is expanded
+        Authorization: "Bearer ${SIEM_TOKEN}" # ${ENV} is expanded
     - type: syslog
-      network: udp           # "" + "" addr = local syslog daemon (Unix only)
+      network: udp # "" + "" addr = local syslog daemon (Unix only)
       addr: logs.example.com:514
       tag: nexus-audit
 ```
+
+Embedding the logger in Go:
 
 ```go
 var cfg audit.Config            // unmarshalled from nexus.yaml
@@ -122,6 +130,6 @@ defer logger.Close()
 Sinks only see entries after they are durably written, and a sink failure never fails `Log`.
 The webhook sink POSTs JSON arrays (≤100 entries) from a background goroutine with a bounded
 queue of 1000 entries: when the collector is slow or down it retries with exponential backoff
-(on network errors, 429 and 5xx) and drops the *oldest* queued entries, counted by
+(on network errors, 429 and 5xx) and drops the _oldest_ queued entries, counted by
 `WebhookSink.Dropped()`. `Close` flushes for up to 5 s. The syslog sink sends each entry as JSON
 (facility AUTH; `deny` at WARNING, others at INFO) and is not available on Windows.

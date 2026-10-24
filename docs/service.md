@@ -38,7 +38,7 @@ nexus-cli approve                             # answer approval prompts
 | `--listen`           | `127.0.0.1:8075` | Must be a loopback address with a fixed port, unless `--allow-remote`.                                                                                        |
 | `--policy`           | lookup order     | `$NEXUS_POLICY`, else `$NEXUS_HOME/policy.yaml` if it exists, else `./nexus.yaml`. Resolved to an **absolute** path; refused if it lives in a temp directory. |
 | `--mitm`             | `auto`           | `auto`, `on` or `off`, passed to `dev`.                                                                                                                       |
-| `--approval-timeout` | `60s`            | Passed to `dev`.                                                                                                                                              |
+| `--approval-timeout` | `1m`             | Passed to `dev`.                                                                                                                                              |
 | `--env KEY=VAL`      |                  | Repeatable. `--env KEY` copies the value from the current environment.                                                                                        |
 | `--force`            |                  | Replace an existing installation (and skip the "port in use" check, since it may be ours).                                                                    |
 | `--dry-run`          |                  | Print the definition and the commands that would run; touch nothing.                                                                                          |
@@ -185,4 +185,4 @@ Limitations:
   answering on that port.
 - **Moved the binary or the policy:** re-run `service install --force`. The definition stores
   absolute paths.
-- **`doctor`** reports whether the service is installed, running and healthy (once wired in).
+- **`doctor`** reports whether the service is installed, running and healthy.
