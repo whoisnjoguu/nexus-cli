@@ -79,7 +79,7 @@ verifiable **dual-actor identity** (Agent + Human), human-in-the-loop approvals,
 - **Tamper-evident audit** — hash-chained JSONL log with `audit verify`.
 - **One-command gating** — `nexus-cli run -- <agent>` puts any CLI agent or tool behind the gate: proxy, token, and CA trust are wired into its environment automatically.
 - **HTTPS interception** — with a local CA (`nexus-cli ca init`), path/method rules, `one_time`, taints, and `inject` apply to HTTPS too; pinned hosts can be passed through.
-- **Approve from anywhere** — answer prompts in the proxy's terminal or from another one with `nexus-cli approve`.
+- **Approve from anywhere** — answer prompts in the proxy's terminal, from another one with `nexus-cli approve`, or in a local web UI (`nexus-cli approve --web`), with desktop notifications when a request is waiting.
 - **Plug-in anywhere** — HTTP forward proxy, MCP gateway over stdio or Streamable HTTP (aggregates & gates upstream MCP servers), or embedded Go/Python SDK.
 
 ## Install
@@ -389,6 +389,26 @@ nexus-cli ca uninstall     # show (--run: execute) the commands that remove it
   tunnelled raw and gated per host — use it for certificate-pinned clients.
 - Upstream TLS is always verified against the system roots; nexus speaks HTTP/1.1 upstream.
 
+## Approvals
+
+Calls that hit a `hitl` rule wait for a human (fail closed after `--approval-timeout`). Answer them
+wherever is convenient — the first answer wins:
+
+```bash
+nexus-cli approve                     # interactive watcher across all local gateways (bell on new requests; -q to silence)
+nexus-cli approve --list              # print pending requests
+nexus-cli approve <id> --decision once   # once | session | always | deny
+nexus-cli approve --web               # open the local approvals web UI (one-time login link)
+nexus-cli approve --web --no-open     # just print the link; --pid <pid> picks a gateway
+```
+
+The web UI is served by the gateway's loopback control API: it lists pending requests (agent,
+act-as, tool, target, reason, age, countdown to auto-deny), the last 20 decisions, and updates live.
+Browsers sign in with a single-use 60s link and get an HttpOnly, SameSite=Strict session cookie; every
+cookie request is Host-, Origin- and CSRF-checked. `dev`, `run` and `mcp serve` also show a desktop
+notification when a request starts waiting (`--notify auto|off`, or `NEXUS_NOTIFY=off`). See
+[docs/approvals.md](docs/approvals.md).
+
 ## MCP gateway
 
 Serve as an MCP stdio server, or aggregate and gate **other** MCP servers behind one policy.
@@ -570,37 +590,37 @@ eval "$(nexus-cli run --attach 127.0.0.1:8075 --print-env)"   # sets HTTP(S)_PRO
 
 ## Commands
 
-| Command                    | Description                                            |
-| -------------------------- | ------------------------------------------------------ |
-| `nexus-cli init`           | Scaffold `nexus.yaml` + MCP host configs               |
-| `nexus-cli login`          | Authenticate the human principal via the Gateway       |
-| `nexus-cli connect`        | Connect an additional provider to your session         |
-| `nexus-cli connections`    | List provider connections + live status                |
-| `nexus-cli providers`      | List providers available on the Gateway                |
-| `nexus-cli whoami`         | Show the logged-in principal                           |
-| `nexus-cli logout`         | Clear the cached session                               |
-| `nexus-cli identity mint`  | Mint a short-lived dual-actor JWT for an agent session |
-| `nexus-cli run -- <cmd>`   | Run a command behind the gate (proxy + token + CA env) |
-| `nexus-cli dev`            | Start the local zero-trust proxy with policy + HITL    |
-| `nexus-cli approve`        | Answer pending approval prompts from another terminal  |
-| `nexus-cli ca init`        | Create the local CA for HTTPS interception             |
-| `nexus-cli ca path`        | Print the CA path (`--bundle`: write the CA bundle)    |
-| `nexus-cli ca fingerprint` | Print the CA certificate's SHA-256 fingerprint         |
-| `nexus-cli ca install`     | Trust the CA in the OS store (`uninstall` to remove)   |
-| `nexus-cli mcp serve`      | Serve / aggregate MCP tool servers behind the policy   |
-| `nexus-cli mcp status`     | Show running MCP gateways and upstream health          |
-| `nexus-cli policy edit`    | Interactive TUI policy editor (writes `nexus.yaml`)    |
-| `nexus-cli policy test`    | Dry-run a tool call against the policy                 |
-| `nexus-cli audit tail`     | Show recent decisions (`-f` to follow, filters)        |
-| `nexus-cli audit verify`   | Verify the audit hash chain, signatures and anchor     |
-| `nexus-cli audit head`     | Print the chain head to store as an off-machine anchor |
-| `nexus-cli audit export`   | Export decisions as JSONL or CSV                       |
-| `nexus-cli audit keygen`   | Create the audit signing key pair                      |
-| `nexus-cli keys jwks`      | Print the public verification keys as a JWKS           |
-| `nexus-cli keys show`      | Show signing key id, backend and location              |
-| `nexus-cli keys rotate`    | Rotate the signing key (`migrate`, `prune` also exist) |
-| `nexus-cli doctor`         | Diagnose the local setup                               |
-| `nexus-cli version`        | Print the version, commit, and platform                |
+| Command                    | Description                                                                          |
+| -------------------------- | ------------------------------------------------------------------------------------ |
+| `nexus-cli init`           | Scaffold `nexus.yaml` + MCP host configs                                             |
+| `nexus-cli login`          | Authenticate the human principal via the Gateway                                     |
+| `nexus-cli connect`        | Connect an additional provider to your session                                       |
+| `nexus-cli connections`    | List provider connections + live status                                              |
+| `nexus-cli providers`      | List providers available on the Gateway                                              |
+| `nexus-cli whoami`         | Show the logged-in principal                                                         |
+| `nexus-cli logout`         | Clear the cached session                                                             |
+| `nexus-cli identity mint`  | Mint a short-lived dual-actor JWT for an agent session                               |
+| `nexus-cli run -- <cmd>`   | Run a command behind the gate (proxy + token + CA env)                               |
+| `nexus-cli dev`            | Start the local zero-trust proxy with policy + HITL                                  |
+| `nexus-cli approve`        | Answer pending approvals from another terminal (`--list`, `--web` UI, `--pid`, `-q`) |
+| `nexus-cli ca init`        | Create the local CA for HTTPS interception                                           |
+| `nexus-cli ca path`        | Print the CA path (`--bundle`: write the CA bundle)                                  |
+| `nexus-cli ca fingerprint` | Print the CA certificate's SHA-256 fingerprint                                       |
+| `nexus-cli ca install`     | Trust the CA in the OS store (`uninstall` to remove)                                 |
+| `nexus-cli mcp serve`      | Serve / aggregate MCP tool servers behind the policy                                 |
+| `nexus-cli mcp status`     | Show running MCP gateways and upstream health                                        |
+| `nexus-cli policy edit`    | Interactive TUI policy editor (writes `nexus.yaml`)                                  |
+| `nexus-cli policy test`    | Dry-run a tool call against the policy                                               |
+| `nexus-cli audit tail`     | Show recent decisions (`-f` to follow, filters)                                      |
+| `nexus-cli audit verify`   | Verify the audit hash chain, signatures and anchor                                   |
+| `nexus-cli audit head`     | Print the chain head to store as an off-machine anchor                               |
+| `nexus-cli audit export`   | Export decisions as JSONL or CSV                                                     |
+| `nexus-cli audit keygen`   | Create the audit signing key pair                                                    |
+| `nexus-cli keys jwks`      | Print the public verification keys as a JWKS                                         |
+| `nexus-cli keys show`      | Show signing key id, backend and location                                            |
+| `nexus-cli keys rotate`    | Rotate the signing key (`migrate`, `prune` also exist)                               |
+| `nexus-cli doctor`         | Diagnose the local setup                                                             |
+| `nexus-cli version`        | Print the version, commit, and platform                                              |
 
 ## Project Layout
 
@@ -615,10 +635,11 @@ nexus-cli/
 │   ├── audit/           # hash-chained, tamper-evident decision log
 │   ├── credential/      # broker credential resolver (nexus-framework SDK)
 │   ├── ca/              # local CA + per-host leaf certificates for HTTPS interception
-│   ├── control/         # loopback control API used by `nexus-cli approve`
+│   ├── control/         # loopback control API + approvals web UI used by `nexus-cli approve`
 │   ├── hitl/            # approval broker, terminal prompt, first-answer-wins fan-out
 │   ├── jwt/             # Ed25519 signing, verification, keystore, replay guard, JWKS
 │   ├── mcp/             # MCP stdio server + upstream gateway + broker-access tools
+│   ├── notify/          # desktop notifications for pending approvals
 │   ├── policy/          # declarative least-privilege policy engine
 │   ├── principal/       # human identity + multi-provider connections via the Gateway
 │   ├── proxy/           # forward proxy, auth, CONNECT tunnelling + TLS interception
