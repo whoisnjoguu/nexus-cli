@@ -1,10 +1,10 @@
 //go:build !unix && !windows
 
-package audit
+package fslock
 
 import "os"
 
 // No advisory locking on this platform: only a single writing process is safe.
-func lockFile(*os.File) error { return nil }
+func lock(*os.File) error { return nil }
 
-func unlockFile(*os.File) {}
+func unlock(*os.File) {}

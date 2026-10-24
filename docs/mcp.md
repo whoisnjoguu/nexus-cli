@@ -49,18 +49,21 @@ mcp:
 
 ### `mcp serve` flags
 
-| Flag                                             | Default      | Meaning                                                                                                                                         |
-| ------------------------------------------------ | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--policy`                                       | `nexus.yaml` | Policy + upstream config.                                                                                                                       |
-| `--strict`                                       | off          | Every tool call needs approval.                                                                                                                 |
-| `--http ADDR`                                    | (stdio)      | Serve Streamable HTTP at `http://ADDR/mcp` instead of stdio.                                                                                    |
-| `--stdio`                                        | off          | With `--http`, serve stdio as well.                                                                                                             |
-| `--http-token`                                   | generated    | Bearer token for HTTP clients. Generated tokens are printed to stderr and written to `<nexus home>/mcp/http.token` (0600, removed on exit).     |
-| `--http-allowed-host`                            | none         | Extra `Host` header values accepted (needed when binding a non-loopback address behind a name).                                                 |
-| `--call-timeout`                                 | `5m`         | Per-request timeout for anything forwarded to an upstream. On timeout the upstream gets `notifications/cancelled` and the client gets an error. |
-| `--approval-timeout`                             | `2m`         | How long a HITL prompt waits before it is treated as a denial.                                                                                  |
-| `--no-restart`                                   | off          | Don't restart upstreams that exit.                                                                                                              |
-| `--agent-id`, `--key`, `--gateway`, `--no-audit` |              | As before (identity, signing key, broker gateway, audit).                                                                                       |
+| Flag                                             | Default   | Meaning                                                                                                                                         |
+| ------------------------------------------------ | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--policy`                                       | see below | Policy + upstream config. Default: `$NEXUS_POLICY`, else `$NEXUS_HOME/policy.yaml` if it exists, else `./nexus.yaml`.                           |
+| `--strict`                                       | off       | Every tool call needs approval.                                                                                                                 |
+| `--http ADDR`                                    | (stdio)   | Serve Streamable HTTP at `http://ADDR/mcp` instead of stdio.                                                                                    |
+| `--stdio`                                        | off       | With `--http`, serve stdio as well.                                                                                                             |
+| `--http-token`                                   | generated | Bearer token for HTTP clients. Generated tokens are printed to stderr and written to `<nexus home>/mcp/http.token` (0600, removed on exit).     |
+| `--http-allowed-host`                            | none      | Extra `Host` header values accepted (needed when binding a non-loopback address behind a name).                                                 |
+| `--call-timeout`                                 | `5m`      | Per-request timeout for anything forwarded to an upstream. On timeout the upstream gets `notifications/cancelled` and the client gets an error. |
+| `--approval-timeout`                             | `2m`      | How long a HITL prompt waits before it is treated as a denial.                                                                                  |
+| `--no-restart`                                   | off       | Don't restart upstreams that exit.                                                                                                              |
+| `--no-reload`                                    | off       | Disable policy hot reload (file polling and SIGHUP).                                                                                            |
+| `--ephemeral-state`                              | off       | Keep `one_time` and taint state in memory only.                                                                                                 |
+| `--accept-policy-change`                         | off       | Accept and re-pin a policy whose hash differs from `$NEXUS_HOME/policy.pin`.                                                                    |
+| `--agent-id`, `--key`, `--gateway`, `--no-audit` |           | As before (identity, signing key, broker gateway, audit).                                                                                       |
 
 `<nexus home>` is `$NEXUS_HOME` or `~/.nexus`.
 
@@ -79,6 +82,14 @@ the provider:
 
 The default policy allows `resources/read` and `prompts/get` and sends `sampling/createMessage`
 to a human: an upstream asking the host's LLM to generate text is a prompt-injection vector.
+
+### Protected files
+
+Before any rule is evaluated, a built-in guard denies tool calls whose arguments (searched
+recursively) name a path inside the active policy file, the policy pin, `$NEXUS_HOME` or the
+audit log directory — relative paths, `..` and symlinks included. The reason is
+`protected nexus file`. The policy hot-reloads on change (or SIGHUP) and is checked against its
+pin; see [policy.md](policy.md).
 
 ### Argument rules
 

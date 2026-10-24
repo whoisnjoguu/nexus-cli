@@ -17,6 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/whoisnjoguu/nexus-cli/pkg/audit"
 	"github.com/whoisnjoguu/nexus-cli/pkg/control"
 	"github.com/whoisnjoguu/nexus-cli/pkg/hitl"
 	"github.com/whoisnjoguu/nexus-cli/pkg/jwt"
@@ -39,6 +40,9 @@ var (
 	mcpCallTimeout     time.Duration
 	mcpApprovalTimeout time.Duration
 	mcpNoRestart       bool
+	mcpNoReload        bool
+	mcpEphemeral       bool
+	mcpAcceptChange    bool
 )
 
 var mcpCmd = &cobra.Command{
@@ -66,6 +70,17 @@ supports it, and in any case queues the request for ` + "`nexus-cli approve`" + 
 			return err
 		}
 
+		policyPath := resolvePolicyPath(cmd)
+		rt, err := loadPolicyRuntime(policyPath, runtimeOptions{AcceptPolicyChange: mcpAcceptChange, NoAudit: mcpNoAudit})
+		if err != nil {
+			return err
+		}
+		defer rt.Close()
+		warnPolicyInWorkspace(os.Stderr, policyPath)
+		if _, err := rt.persistState(mcpEphemeral); err != nil {
+			return err
+		}
+
 		mcfg := mcp.Config{
 			Signer:          signer,
 			Strict:          mcpStrict,
@@ -74,23 +89,16 @@ supports it, and in any case queues the request for ` + "`nexus-cli approve`" + 
 			CallTimeout:     mcpCallTimeout,
 			ApprovalTimeout: mcpApprovalTimeout,
 			DisableRestart:  mcpNoRestart,
-			PolicyPath:      mcpAbsPath(mcpPolicy),
+			PolicyPath:      mcpAbsPath(policyPath),
+			Engine:          rt.Engine,
+			Upstreams:       rt.Config.MCP.Upstreams,
 		}
 		if dir, derr := mcp.StatusDir(); derr == nil {
 			mcfg.StatusDir = dir
 		}
-
-		if cfg, exists, cerr := loadConfig(mcpPolicy); cerr != nil {
-			return cerr
-		} else if exists {
-			mcfg.Engine = policy.NewEngine(cfg.Policy)
-			mcfg.Upstreams = cfg.MCP.Upstreams
-		} else {
-			mcfg.Engine = policy.NewEngine(policy.DefaultPolicy())
-		}
 		mcfg.OnPersistRule = func(rule policy.Rule) {
-			if err := appendPolicyRule(mcpPolicy, rule); err != nil {
-				fmt.Fprintf(os.Stderr, "note: could not persist rule to %s: %v\n", mcpPolicy, err)
+			if err := appendPolicyRule(policyPath, rule); err != nil {
+				fmt.Fprintf(os.Stderr, "note: could not persist rule to %s: %v\n", policyPath, err)
 			}
 		}
 
@@ -113,13 +121,19 @@ supports it, and in any case queues the request for ` + "`nexus-cli approve`" + 
 			mcfg.SessionPath = sp
 		}
 
+		var auditlog *audit.Logger
 		if !mcpNoAudit {
-			lg, _, aerr := openAuditLog(mcpPolicy)
+			lg, _, aerr := rt.openAudit()
 			if aerr != nil {
 				return aerr
 			}
 			defer lg.Close()
+			auditlog = lg
 			mcfg.Audit = lg
+		}
+		if !mcpNoReload {
+			rt.watch(auditlog, os.Stderr, false)
+			defer rt.Close() // stop reloads before the audit log closes
 		}
 
 		// Out-of-band approvals: `nexus-cli approve` (another terminal) can answer HITL prompts,
@@ -325,7 +339,10 @@ var errNoHTTPForStdio = errors.New("--stdio only makes sense together with --htt
 func init() {
 	mcpServeCmd.Flags().BoolVar(&mcpStrict, "strict", false, "Require HITL approval for every tool call")
 	mcpServeCmd.Flags().StringVar(&mcpKey, "key", "", "Path to the persistent Ed25519 key (default ~/.nexus/ed25519.key)")
-	mcpServeCmd.Flags().StringVar(&mcpPolicy, "policy", "nexus.yaml", "Path to the policy/gateway config file")
+	mcpServeCmd.Flags().StringVar(&mcpPolicy, "policy", "nexus.yaml", policyFlagHelp)
+	mcpServeCmd.Flags().BoolVar(&mcpNoReload, "no-reload", false, "Disable policy hot reload (file polling and SIGHUP)")
+	mcpServeCmd.Flags().BoolVar(&mcpEphemeral, "ephemeral-state", false, "Keep one_time and taint state in memory only (lost on restart)")
+	mcpServeCmd.Flags().BoolVar(&mcpAcceptChange, "accept-policy-change", false, "Accept (and re-pin) a policy whose sha256 differs from $NEXUS_HOME/policy.pin")
 	mcpServeCmd.Flags().StringVar(&mcpAgentID, "agent-id", "mcp-agent", "Agent identity to attribute tool calls to")
 	mcpServeCmd.Flags().StringVar(&mcpGateway, "gateway", "", "nexus-framework Gateway URL for broker-access tools (or NEXUS_GATEWAY_URL / session)")
 	mcpServeCmd.Flags().BoolVar(&mcpNoAudit, "no-audit", false, "Disable the tamper-evident audit log")

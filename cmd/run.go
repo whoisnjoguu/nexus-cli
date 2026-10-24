@@ -30,20 +30,23 @@ import (
 )
 
 var (
-	runAgentID  string
-	runScopes   string
-	runTTL      time.Duration
-	runPolicy   string
-	runStrict   bool
-	runInject   bool
-	runMITM     string
-	runAttach   string
-	runNoProxy  string
-	runTimeout  time.Duration
-	runNoAudit  bool
-	runKey      string
-	runPrintEnv bool
-	runUserID   string
+	runAgentID      string
+	runScopes       string
+	runTTL          time.Duration
+	runPolicy       string
+	runStrict       bool
+	runInject       bool
+	runMITM         string
+	runAttach       string
+	runNoProxy      string
+	runTimeout      time.Duration
+	runNoAudit      bool
+	runKey          string
+	runPrintEnv     bool
+	runUserID       string
+	runNoReload     bool
+	runAcceptChange bool
+	runEphemeral    bool
 )
 
 // caBundleEnv are the variables pointed at the system+nexus CA bundle so common runtimes trust
@@ -96,10 +99,15 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--mitm must be auto, on or off (got %q)", runMITM)
 	}
 
-	pol, _, polExists, err := loadPolicyOrDefault(runPolicy)
+	rt, err := loadPolicyRuntime(resolvePolicyPath(cmd), runtimeOptions{AcceptPolicyChange: runAcceptChange, NoAudit: runNoAudit})
 	if err != nil {
 		return err
 	}
+	defer rt.Close()
+	if runAttach == "" {
+		warnPolicyInWorkspace(cmd.ErrOrStderr(), rt.Path)
+	}
+	pol, polExists := rt.Policy, rt.Exists
 
 	agent := runAgentID
 	if agent == "" {
@@ -157,7 +165,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		proxyAddr, shutdown, err = startRunProxy(pol, signer, mitmCA, stderr)
+		proxyAddr, shutdown, err = startRunProxy(rt, signer, mitmCA, stderr)
 		if err != nil {
 			return err
 		}
@@ -207,13 +215,25 @@ func runResolveActor(warn io.Writer) (actAs string, ceiling []string, connID, ga
 
 // startRunProxy serves an authenticated in-process proxy on 127.0.0.1:0 whose approvals go only to
 // the broker (exposed to `nexus-cli approve` via the control API).
-func startRunProxy(pol policy.Policy, signer *jwt.TokenSigner, mitmCA *ca.CA, stderr io.Writer) (string, func(), error) {
+func startRunProxy(rt *policyRuntime, signer *jwt.TokenSigner, mitmCA *ca.CA, stderr io.Writer) (string, func(), error) {
+	pol := rt.Policy
 	var auditlog *audit.Logger
 	if !runNoAudit {
 		var err error
-		if auditlog, _, err = openAuditLog(runPolicy); err != nil {
+		if auditlog, _, err = rt.openAudit(); err != nil {
 			return "", nil, err
 		}
+	}
+	replay, err := rt.persistState(runEphemeral)
+	if err != nil {
+		if auditlog != nil {
+			_ = auditlog.Close()
+		}
+		return "", nil, err
+	}
+	if !runNoReload {
+		// SIGHUP is relayed to the child by runChild, so only file changes trigger a reload.
+		rt.watch(auditlog, stderr, true)
 	}
 	var resolver proxy.CredentialResolver
 	if runInject {
@@ -227,15 +247,15 @@ func startRunProxy(pol policy.Policy, signer *jwt.TokenSigner, mitmCA *ca.CA, st
 		return broker.Approve(ctx, req)
 	})
 
-	policyPath := runPolicy
+	policyPath := rt.Path
 	server := proxy.New(proxy.Config{
 		Listen:            "127.0.0.1:0",
 		Strict:            runStrict,
 		RequireAuth:       true,
 		Verifier:          signer.Verifier(),
-		Engine:            policy.NewEngine(pol),
+		Engine:            rt.Engine,
 		Audit:             auditlog,
-		Replay:            jwt.NewReplayGuard(),
+		Replay:            replay,
 		Credentials:       resolver,
 		Approver:          approver,
 		ApprovalTimeout:   runTimeout,
@@ -250,6 +270,7 @@ func startRunProxy(pol policy.Policy, signer *jwt.TokenSigner, mitmCA *ca.CA, st
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
+		rt.Close()
 		if auditlog != nil {
 			_ = auditlog.Close()
 		}
@@ -266,6 +287,7 @@ func startRunProxy(pol policy.Policy, signer *jwt.TokenSigner, mitmCA *ca.CA, st
 		fmt.Fprintf(stderr, "[nexus] warning: approvals unavailable (%v); calls needing approval will be denied\n", cerr)
 	}
 	shutdown := func() {
+		rt.Close()
 		cancel()
 		if err := <-served; err != nil {
 			fmt.Fprintf(stderr, "[nexus] proxy shutdown: %v\n", err)
@@ -452,7 +474,7 @@ func init() {
 	f.StringVarP(&runAgentID, "agent-id", "a", "", "Agent ID for the token (default: the command's base name)")
 	f.StringVarP(&runScopes, "scopes", "s", "", "Comma-separated scopes (default: every scope required by the policy, capped by your login ceiling)")
 	f.DurationVar(&runTTL, "ttl", 12*time.Hour, "Token lifetime, i.e. the maximum run duration")
-	f.StringVar(&runPolicy, "policy", "nexus.yaml", "Path to the policy file (falls back to the safe-tier default)")
+	f.StringVar(&runPolicy, "policy", "nexus.yaml", policyFlagHelp+" (falls back to the safe-tier default)")
 	f.BoolVar(&runStrict, "strict", false, "Require approval for every call, including ones the policy allows")
 	f.BoolVar(&runInject, "inject", false, "Inject broker-issued upstream credentials for rules marked inject: true")
 	f.StringVar(&runMITM, "mitm", "auto", "HTTPS interception: auto (on if a CA exists), on (create the CA if needed), off")
@@ -462,6 +484,9 @@ func init() {
 	f.BoolVar(&runNoAudit, "no-audit", false, "Disable the tamper-evident audit log")
 	f.StringVar(&runKey, "key", "", "Path to the persistent Ed25519 key (default $NEXUS_HOME/ed25519.key or ~/.nexus/ed25519.key)")
 	f.BoolVar(&runPrintEnv, "print-env", false, "With --attach: print 'export' lines for eval instead of running a command")
+	f.BoolVar(&runNoReload, "no-reload", false, "Disable policy hot reload")
+	f.BoolVar(&runEphemeral, "ephemeral-state", false, "Keep replay, one_time and taint state in memory only (lost on restart)")
+	f.BoolVar(&runAcceptChange, "accept-policy-change", false, "Accept (and re-pin) a policy whose sha256 differs from $NEXUS_HOME/policy.pin")
 	f.StringVarP(&runUserID, "user-id", "u", "", "Human principal fallback when not logged in")
 	rootCmd.AddCommand(runCmd)
 }

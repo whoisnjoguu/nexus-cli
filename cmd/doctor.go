@@ -14,6 +14,7 @@ import (
 	"github.com/whoisnjoguu/nexus-cli/pkg/audit"
 	"github.com/whoisnjoguu/nexus-cli/pkg/jwt"
 	"github.com/whoisnjoguu/nexus-cli/pkg/mcp"
+	"github.com/whoisnjoguu/nexus-cli/pkg/policy"
 )
 
 var doctorPolicy string
@@ -84,13 +85,39 @@ var doctorCmd = &cobra.Command{
 			}
 		}
 
-		if _, exists, cerr := loadConfig(doctorPolicy); cerr != nil {
+		doctorPolicy = resolvePolicyPath(cmd)
+		if _, serr := os.Stat(doctorPolicy); serr != nil {
+			check(false, "no policy file at "+doctorPolicy+" (run: nexus-cli init) — the safe-tier default policy applies")
+		} else if issues, lerr := lintPolicyFile(doctorPolicy); lerr != nil {
 			ok = false
-			check(false, "policy invalid: "+cerr.Error())
-		} else if exists {
-			check(true, "policy loaded from "+doctorPolicy)
+			check(false, "policy unreadable: "+lerr.Error())
 		} else {
-			check(false, "no policy file at "+doctorPolicy+" (run: nexus-cli init) — proxy uses method heuristics")
+			errs, warns := policy.CountIssues(issues)
+			if errs > 0 {
+				ok = false
+				check(false, fmt.Sprintf("policy %s has %d error(s), %d warning(s) — run: nexus-cli policy lint", doctorPolicy, errs, warns))
+			} else {
+				msg := fmt.Sprintf("policy loaded from %s (0 errors, %d warning(s)", doctorPolicy, warns)
+				if warns > 0 {
+					msg += " — run: nexus-cli policy lint"
+				}
+				check(true, msg+")")
+			}
+			pinFile, _ := policy.PinPath()
+			if data, rerr := os.ReadFile(doctorPolicy); rerr == nil && pinFile != "" {
+				switch pinned, perr := policy.CheckPin(pinFile, doctorPolicy, data); {
+				case perr != nil:
+					ok = false
+					check(false, perr.Error())
+				case pinned:
+					check(true, "policy matches its pin ("+pinFile+")")
+				default:
+					check(true, "policy not pinned (optional: nexus-cli policy pin)")
+				}
+			}
+			if insideWorkspace(doctorPolicy) {
+				check(false, "policy "+displayPath(doctorPolicy)+" is inside the current directory (an agent's workspace could edit it) — consider: nexus-cli policy protect")
+			}
 		}
 
 		if apath, aerr := auditLogPath(); aerr == nil {
@@ -174,6 +201,6 @@ func check(pass bool, msg string) {
 }
 
 func init() {
-	doctorCmd.Flags().StringVar(&doctorPolicy, "policy", "nexus.yaml", "Path to the policy file")
+	doctorCmd.Flags().StringVar(&doctorPolicy, "policy", "nexus.yaml", policyFlagHelp)
 	rootCmd.AddCommand(doctorCmd)
 }

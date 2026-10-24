@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -91,6 +92,8 @@ type Decision struct {
 	Reason string
 	// TaintEscalated is set when taint tracking raised an otherwise-allowed call to HITL.
 	TaintEscalated bool
+	// Source is "guard" when the built-in protected-path guard decided (see SetProtectedPaths).
+	Source string
 }
 
 // Allowed reports whether the decision permits execution without further interaction.
@@ -105,6 +108,9 @@ type sessionState struct {
 	consumed map[string]bool // ruleFingerprint -> used (one_time)
 	granted  map[string]bool // grantKey -> grant also covers taint escalation
 	lastSeen time.Time
+
+	persisted int       // len(tainted)+len(consumed) at the last StateStore save
+	savedAt   time.Time // time of the last StateStore save
 }
 
 // Engine evaluates requests against a policy while tracking per-session taint and one-time use.
@@ -115,6 +121,9 @@ type Engine struct {
 	sessions  map[string]*sessionState
 	lastSweep time.Time
 	now       func() time.Time
+
+	guard atomic.Pointer[guardSet]
+	store StateStore // optional; see SetStateStore
 }
 
 // NewEngine builds an evaluator around a policy, applying sane defaults.
@@ -148,6 +157,7 @@ func (e *Engine) sessionLocked(id string) *sessionState {
 			granted:  make(map[string]bool),
 		}
 		e.sessions[id] = s
+		e.hydrateLocked(id, s)
 	}
 	s.lastSeen = now
 	return s
@@ -225,10 +235,16 @@ func DefaultPolicy() Policy {
 			{Match: Match{Tool: "prompts/get"}, Action: ActionAllow},
 			{Match: Match{Tool: "execute_shell"}, Action: ActionDeny},
 			{Match: Match{Tool: "*delete*"}, Action: ActionHITL},
-			{Match: Match{Tool: "*read*"}, Action: ActionAllow},
-			{Match: Match{Tool: "*list*"}, Action: ActionAllow},
-			{Match: Match{Tool: "*search*"}, Action: ActionAllow},
-			{Match: Match{Tool: "*get*"}, Action: ActionAllow},
+			// Read-only verbs, anchored at a word start ("read_file", "fs__read_file") so that
+			// "forget_password" or "thread_reply" don't ride along on a substring match.
+			{Match: Match{Tool: "read_*"}, Action: ActionAllow},
+			{Match: Match{Tool: "*__read_*"}, Action: ActionAllow},
+			{Match: Match{Tool: "list_*"}, Action: ActionAllow},
+			{Match: Match{Tool: "*__list_*"}, Action: ActionAllow},
+			{Match: Match{Tool: "search_*"}, Action: ActionAllow},
+			{Match: Match{Tool: "*__search_*"}, Action: ActionAllow},
+			{Match: Match{Tool: "get_*"}, Action: ActionAllow},
+			{Match: Match{Tool: "*__get_*"}, Action: ActionAllow},
 			{Match: Match{Method: "GET"}, Action: ActionAllow},
 			{Match: Match{Method: "HEAD"}, Action: ActionAllow},
 		},
@@ -236,20 +252,30 @@ func DefaultPolicy() Policy {
 }
 
 // Policy returns the underlying ruleset.
-func (e *Engine) Policy() Policy { return e.policy }
+func (e *Engine) Policy() Policy {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.policy
+}
 
 // ProviderScopes returns the OAuth scopes configured for a provider, if any.
 func (e *Engine) ProviderScopes(provider string) []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	return e.policy.Providers[provider].Scopes
 }
 
 // Evaluate authorizes a request, mutating session state (taint, one-time consumption) as a side effect.
 func (e *Engine) Evaluate(req Request) Decision {
+	if dec, ok := e.checkGuard(req); ok {
+		return dec
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	s := e.sessionLocked(req.SessionID)
 	dec := e.evaluateLocked(s, req)
+	e.persistLocked(req.SessionID, s)
 
 	// A session grant only answers a prompt the human already answered; deny/scope/one-time still win.
 	if dec.Action == ActionHITL {
@@ -338,7 +364,7 @@ func ruleMatches(m Match, req Request) bool {
 		}
 		return len(m.Args) == 0 || argsMatch(m.Args, req.Args)
 	}
-	if m.Method != "" && !strings.EqualFold(m.Method, req.Method) {
+	if m.Method != "" && m.Method != "*" && !strings.EqualFold(m.Method, req.Method) {
 		return false
 	}
 	if m.Host != "" && !hostMatch(m.Host, req.Host) {

@@ -20,17 +20,20 @@ import (
 )
 
 var (
-	proxyPort   int
-	strictMode  bool
-	requireAuth bool
-	devKeyPath  string
-	devPolicy   string
-	devNoAudit  bool
-	devInject   bool
-	devListen   string
-	devSingle   bool
-	devTimeout  time.Duration
-	devMITM     string
+	proxyPort       int
+	strictMode      bool
+	requireAuth     bool
+	devKeyPath      string
+	devPolicy       string
+	devNoAudit      bool
+	devInject       bool
+	devListen       string
+	devSingle       bool
+	devTimeout      time.Duration
+	devMITM         string
+	devNoReload     bool
+	devAcceptChange bool
+	devEphemeral    bool
 )
 
 var devCmd = &cobra.Command{
@@ -49,7 +52,6 @@ var devCmd = &cobra.Command{
 				return err
 			}
 			verifier = signer.Verifier()
-			replay = jwt.NewReplayGuard()
 		}
 
 		stdout, stderr := cmd.OutOrStdout(), cmd.ErrOrStderr()
@@ -61,26 +63,39 @@ var devCmd = &cobra.Command{
 			return err
 		}
 
-		pol, agent, exists, err := loadPolicyOrDefault(devPolicy)
+		policyPath := resolvePolicyPath(cmd)
+		rt, err := loadPolicyRuntime(policyPath, runtimeOptions{AcceptPolicyChange: devAcceptChange, NoAudit: devNoAudit})
 		if err != nil {
 			return err
 		}
-		engine := policy.NewEngine(pol)
-		if exists {
-			fmt.Fprintf(stdout, "📜 policy loaded from %s (agent: %s)\n", devPolicy, agent)
+		defer rt.Close()
+		warnPolicyInWorkspace(stderr, policyPath)
+		if r, err := rt.persistState(devEphemeral); err != nil {
+			return err
+		} else if requireAuth {
+			replay = r
+		}
+		pol, engine := rt.Policy, rt.Engine
+		if rt.Exists {
+			fmt.Fprintf(stdout, "📜 policy loaded from %s (agent: %s)\n", policyPath, rt.Config.Agent)
 		} else {
-			fmt.Fprintf(stdout, "📜 no %s found — using the safe-tier default policy (reads allowed, writes ask, shell denied)\n", devPolicy)
+			fmt.Fprintf(stdout, "📜 no %s found — using the safe-tier default policy (reads allowed, writes ask, shell denied)\n", policyPath)
 		}
 
 		var auditlog *audit.Logger
 		if !devNoAudit {
 			var apath string
-			auditlog, apath, err = openAuditLog(devPolicy)
+			auditlog, apath, err = rt.openAudit()
 			if err != nil {
 				return err
 			}
 			defer auditlog.Close()
 			fmt.Fprintf(stdout, "📓 audit log: %s\n", apath)
+		}
+		if !devNoReload {
+			rt.watch(auditlog, stderr, false)
+			defer rt.Close() // stop reloads before the audit log closes
+			fmt.Fprintf(stdout, "♻️  policy hot reload on (edit %s or send SIGHUP; --no-reload disables)\n", policyPath)
 		}
 
 		var resolver proxy.CredentialResolver
@@ -112,8 +127,8 @@ var devCmd = &cobra.Command{
 			UpstreamTransport: upstreamTransportHook,
 			ApprovalTimeout:   devTimeout,
 			OnPersistRule: func(rule policy.Rule) {
-				if err := appendPolicyRule(devPolicy, rule); err != nil {
-					fmt.Fprintf(os.Stderr, "note: could not persist rule to %s: %v\n", devPolicy, err)
+				if err := appendPolicyRule(policyPath, rule); err != nil {
+					fmt.Fprintf(os.Stderr, "note: could not persist rule to %s: %v\n", policyPath, err)
 				}
 			},
 		}
@@ -143,7 +158,7 @@ var devCmd = &cobra.Command{
 			fmt.Fprintln(stdout, "🔐 HTTPS interception: off (HTTPS gated per host; 'nexus-cli ca init' enables per-request HTTPS policy)")
 		}
 
-		ctl, cerr := control.Start(broker, control.Info{Kind: "dev", Listen: addr, Policy: absPath(devPolicy)})
+		ctl, cerr := control.Start(broker, control.Info{Kind: "dev", Listen: addr, Policy: absPath(policyPath)})
 		if cerr != nil {
 			fmt.Fprintf(stderr, "⚠️  approvals from other terminals unavailable: %v\n", cerr)
 		} else {
@@ -183,11 +198,14 @@ func init() {
 	devCmd.Flags().BoolVarP(&strictMode, "strict", "s", false, "Require HITL approval for all calls including GET")
 	devCmd.Flags().BoolVar(&requireAuth, "require-auth", true, "Reject requests without a valid dual-actor micro-JWT (use --require-auth=false to disable)")
 	devCmd.Flags().StringVar(&devKeyPath, "key", "", "Path to the persistent Ed25519 key (default $NEXUS_HOME/ed25519.key or ~/.nexus/ed25519.key)")
-	devCmd.Flags().StringVar(&devPolicy, "policy", "nexus.yaml", "Path to the policy file")
+	devCmd.Flags().StringVar(&devPolicy, "policy", "nexus.yaml", policyFlagHelp)
 	devCmd.Flags().BoolVar(&devNoAudit, "no-audit", false, "Disable the tamper-evident audit log")
 	devCmd.Flags().StringVar(&devListen, "listen", "", "Address to bind as host:port (default 127.0.0.1:<port>; non-loopback exposes the proxy to the network)")
 	devCmd.Flags().BoolVar(&devSingle, "single-use", false, "Reject any reuse of a token (default: tokens are reusable until expiry unless minted --single-use)")
 	devCmd.Flags().DurationVar(&devTimeout, "approval-timeout", 60*time.Second, "How long a call waits for a human decision before it is denied")
 	devCmd.Flags().StringVar(&devMITM, "mitm", "auto", "HTTPS interception: auto (on if a CA exists, see 'nexus-cli ca init'), on (create the CA if needed), off")
+	devCmd.Flags().BoolVar(&devNoReload, "no-reload", false, "Disable policy hot reload (file polling and SIGHUP)")
+	devCmd.Flags().BoolVar(&devEphemeral, "ephemeral-state", false, "Keep replay, one_time and taint state in memory only (lost on restart)")
+	devCmd.Flags().BoolVar(&devAcceptChange, "accept-policy-change", false, "Accept (and re-pin) a policy whose sha256 differs from $NEXUS_HOME/policy.pin")
 	devCmd.Flags().BoolVar(&devInject, "inject", false, "Inject broker-issued upstream credentials for rules marked inject: true")
 }
