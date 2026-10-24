@@ -1,5 +1,6 @@
-// Package sdk lets agents embed nexus-cli's authorization directly, gating every tool call
-// against policy, human approval, and the audit log without running a separate proxy.
+// Package sdk lets agents gate every tool call against nexus-cli's policy, human approval, and
+// the audit log: either by asking a running nexus-cli over its control API (Client, see
+// docs/sdk.md) or in-process without a separate proxy (LocalGate).
 package sdk
 
 import (
