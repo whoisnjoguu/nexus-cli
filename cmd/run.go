@@ -46,6 +46,7 @@ var (
 	runUserID       string
 	runNoReload     bool
 	runAcceptChange bool
+	runEphemeral    bool
 )
 
 // caBundleEnv are the variables pointed at the system+nexus CA bundle so common runtimes trust
@@ -223,6 +224,13 @@ func startRunProxy(rt *policyRuntime, signer *jwt.TokenSigner, mitmCA *ca.CA, st
 			return "", nil, err
 		}
 	}
+	replay, err := rt.persistState(runEphemeral)
+	if err != nil {
+		if auditlog != nil {
+			_ = auditlog.Close()
+		}
+		return "", nil, err
+	}
 	if !runNoReload {
 		// SIGHUP is relayed to the child by runChild, so only file changes trigger a reload.
 		rt.watch(auditlog, stderr, true)
@@ -247,7 +255,7 @@ func startRunProxy(rt *policyRuntime, signer *jwt.TokenSigner, mitmCA *ca.CA, st
 		Verifier:          signer.Verifier(),
 		Engine:            rt.Engine,
 		Audit:             auditlog,
-		Replay:            jwt.NewReplayGuard(),
+		Replay:            replay,
 		Credentials:       resolver,
 		Approver:          approver,
 		ApprovalTimeout:   runTimeout,
@@ -477,6 +485,7 @@ func init() {
 	f.StringVar(&runKey, "key", "", "Path to the persistent Ed25519 key (default $NEXUS_HOME/ed25519.key or ~/.nexus/ed25519.key)")
 	f.BoolVar(&runPrintEnv, "print-env", false, "With --attach: print 'export' lines for eval instead of running a command")
 	f.BoolVar(&runNoReload, "no-reload", false, "Disable policy hot reload")
+	f.BoolVar(&runEphemeral, "ephemeral-state", false, "Keep replay, one_time and taint state in memory only (lost on restart)")
 	f.BoolVar(&runAcceptChange, "accept-policy-change", false, "Accept (and re-pin) a policy whose sha256 differs from $NEXUS_HOME/policy.pin")
 	f.StringVarP(&runUserID, "user-id", "u", "", "Human principal fallback when not logged in")
 	rootCmd.AddCommand(runCmd)

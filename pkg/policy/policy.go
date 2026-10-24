@@ -108,6 +108,9 @@ type sessionState struct {
 	consumed map[string]bool // ruleFingerprint -> used (one_time)
 	granted  map[string]bool // grantKey -> grant also covers taint escalation
 	lastSeen time.Time
+
+	persisted int       // len(tainted)+len(consumed) at the last StateStore save
+	savedAt   time.Time // time of the last StateStore save
 }
 
 // Engine evaluates requests against a policy while tracking per-session taint and one-time use.
@@ -120,6 +123,7 @@ type Engine struct {
 	now       func() time.Time
 
 	guard atomic.Pointer[guardSet]
+	store StateStore // optional; see SetStateStore
 }
 
 // NewEngine builds an evaluator around a policy, applying sane defaults.
@@ -153,6 +157,7 @@ func (e *Engine) sessionLocked(id string) *sessionState {
 			granted:  make(map[string]bool),
 		}
 		e.sessions[id] = s
+		e.hydrateLocked(id, s)
 	}
 	s.lastSeen = now
 	return s
@@ -270,6 +275,7 @@ func (e *Engine) Evaluate(req Request) Decision {
 
 	s := e.sessionLocked(req.SessionID)
 	dec := e.evaluateLocked(s, req)
+	e.persistLocked(req.SessionID, s)
 
 	// A session grant only answers a prompt the human already answered; deny/scope/one-time still win.
 	if dec.Action == ActionHITL {

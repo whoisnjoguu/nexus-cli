@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/whoisnjoguu/nexus-cli/pkg/audit"
+	"github.com/whoisnjoguu/nexus-cli/pkg/jwt"
 	"github.com/whoisnjoguu/nexus-cli/pkg/policy"
 )
 
@@ -252,5 +254,77 @@ func TestWriteConfigNeverPartiallyRead(t *testing.T) {
 		if err != nil || (cfg.Agent != "small" && len(cfg.Tools) != len(big.Tools)) {
 			t.Fatalf("partial read (%d bytes): %v", len(data), err)
 		}
+	}
+}
+
+type okTransport struct{}
+
+func (okTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: http.Header{}, Request: r}, nil
+}
+
+func proxiedGet(t *testing.T, addr, token string) int {
+	t.Helper()
+	pu, _ := url.Parse("http://nexus:" + token + "@" + addr)
+	c := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(pu)}}
+	resp, err := c.Get("http://example.com/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+func TestDevSingleUseTokenRejectedAfterRestart(t *testing.T) {
+	isolateHome(t)
+	upstreamTransportHook = okTransport{}
+	t.Cleanup(func() { upstreamTransportHook = nil })
+	dir := t.TempDir()
+	pol := filepath.Join(dir, "nexus.yaml")
+	if err := os.WriteFile(pol, []byte("tools:\n  - match: {method: GET}\n    action: allow\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(dir, "k")
+	signer, err := jwt.LoadOrCreateSigner(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mint := func() string {
+		tok, err := signer.Mint(jwt.MintOptions{AgentID: "a", UserID: "u", TTL: time.Minute, SingleUse: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tok
+	}
+	args := []string{"--no-audit", "--policy", pol, "--key", key}
+
+	tok := mint()
+	addr, _, _, stop := startDevWith(t, args...)
+	if c := proxiedGet(t, addr, tok); c != http.StatusOK {
+		t.Fatalf("first use = %d", c)
+	}
+	if c := proxiedGet(t, addr, tok); c == http.StatusOK {
+		t.Fatal("reuse accepted in the same process")
+	}
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+	addr, _, _, stop = startDevWith(t, args...)
+	if c := proxiedGet(t, addr, tok); c == http.StatusOK {
+		t.Fatal("single-use token accepted again after restart")
+	}
+	_ = stop()
+
+	// --ephemeral-state restores the old in-memory behaviour.
+	tok = mint()
+	addr, _, _, stop = startDevWith(t, append(args, "--ephemeral-state")...)
+	if c := proxiedGet(t, addr, tok); c != http.StatusOK {
+		t.Fatalf("ephemeral first use = %d", c)
+	}
+	_ = stop()
+	addr, _, _, stop = startDevWith(t, append(args, "--ephemeral-state")...)
+	defer stop()
+	if c := proxiedGet(t, addr, tok); c != http.StatusOK {
+		t.Fatalf("ephemeral state persisted: %d", c)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/whoisnjoguu/nexus-cli/pkg/audit"
+	"github.com/whoisnjoguu/nexus-cli/pkg/jwt"
 	"github.com/whoisnjoguu/nexus-cli/pkg/policy"
 )
 
@@ -140,6 +141,33 @@ func (rt *policyRuntime) auditPin(decision, reason, sum string) {
 		_ = l.Log(entry)
 		_ = l.Close()
 	}
+}
+
+// persistState makes single-use tokens, one_time consumption and taints survive restarts (and
+// shared between nexus-cli processes) via $NEXUS_HOME/state/{jti,sessions}.json. With ephemeral
+// (--ephemeral-state) everything stays in memory. It returns the replay guard to use.
+func (rt *policyRuntime) persistState(ephemeral bool) (*jwt.ReplayGuard, error) {
+	if ephemeral {
+		return jwt.NewReplayGuard(), nil
+	}
+	jp, err := jwt.DefaultReplayStatePath()
+	if err != nil {
+		return nil, err
+	}
+	replay, err := jwt.NewPersistentReplayGuard(jp)
+	if err != nil {
+		return nil, err
+	}
+	sp, err := policy.DefaultSessionStatePath()
+	if err != nil {
+		return nil, err
+	}
+	st, err := policy.NewFileStateStore(sp)
+	if err != nil {
+		return nil, err
+	}
+	rt.Engine.SetStateStore(st)
+	return replay, nil
 }
 
 // openAudit opens the audit log configured by the loaded file's audit: section.

@@ -33,6 +33,7 @@ var (
 	devMITM         string
 	devNoReload     bool
 	devAcceptChange bool
+	devEphemeral    bool
 )
 
 var devCmd = &cobra.Command{
@@ -51,7 +52,6 @@ var devCmd = &cobra.Command{
 				return err
 			}
 			verifier = signer.Verifier()
-			replay = jwt.NewReplayGuard()
 		}
 
 		stdout, stderr := cmd.OutOrStdout(), cmd.ErrOrStderr()
@@ -70,6 +70,11 @@ var devCmd = &cobra.Command{
 		}
 		defer rt.Close()
 		warnPolicyInWorkspace(stderr, policyPath)
+		if r, err := rt.persistState(devEphemeral); err != nil {
+			return err
+		} else if requireAuth {
+			replay = r
+		}
 		pol, engine := rt.Policy, rt.Engine
 		if rt.Exists {
 			fmt.Fprintf(stdout, "📜 policy loaded from %s (agent: %s)\n", policyPath, rt.Config.Agent)
@@ -200,6 +205,7 @@ func init() {
 	devCmd.Flags().DurationVar(&devTimeout, "approval-timeout", 60*time.Second, "How long a call waits for a human decision before it is denied")
 	devCmd.Flags().StringVar(&devMITM, "mitm", "auto", "HTTPS interception: auto (on if a CA exists, see 'nexus-cli ca init'), on (create the CA if needed), off")
 	devCmd.Flags().BoolVar(&devNoReload, "no-reload", false, "Disable policy hot reload (file polling and SIGHUP)")
+	devCmd.Flags().BoolVar(&devEphemeral, "ephemeral-state", false, "Keep replay, one_time and taint state in memory only (lost on restart)")
 	devCmd.Flags().BoolVar(&devAcceptChange, "accept-policy-change", false, "Accept (and re-pin) a policy whose sha256 differs from $NEXUS_HOME/policy.pin")
 	devCmd.Flags().BoolVar(&devInject, "inject", false, "Inject broker-issued upstream credentials for rules marked inject: true")
 }
