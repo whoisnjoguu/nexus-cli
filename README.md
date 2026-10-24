@@ -13,7 +13,7 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/whoisnjoguu/nexus-cli)](go.mod)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
 
-[Why](#why) · [Quick start](#quick-start) · [Policy](#policy-nexusyaml) · [Identity](#identity) · [Proxy](#run-the-local-zero-trust-proxy) · [MCP gateway](#mcp-gateway) · [SDKs](#embed-in-your-agent-sdks) · [IDE integration](#ide-integration)
+[Why](#why) · [Quick start](#quick-start) · [Policy](#policy-nexusyaml) · [Identity](#identity) · [Proxy](#run-the-local-zero-trust-proxy) · [MCP gateway](#mcp-gateway) · [SDKs](#embed-in-your-agent-sdks) · [IDE integration](#ide-integration) · [Docs](#documentation)
 
 </div>
 
@@ -95,7 +95,7 @@ npx -y @whoisnjoguu/nexus-cli version
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/whoisnjoguu/nexus-cli/master/install.sh | sh
-NEXUS_VERSION=v0.2.0 curl -fsSL https://raw.githubusercontent.com/whoisnjoguu/nexus-cli/master/install.sh | sh   # pin a version
+curl -fsSL https://raw.githubusercontent.com/whoisnjoguu/nexus-cli/master/install.sh | NEXUS_VERSION=v0.2.0 sh   # pin a version
 ```
 
 **Homebrew** — `brew install whoisnjoguu/tap/nexus-cli` · **Go** — `go install github.com/whoisnjoguu/nexus-cli@latest`
@@ -109,7 +109,7 @@ make build          # produces ./nexus-cli
 make install        # or install to $GOBIN / $GOPATH/bin
 ```
 
-Requires Go 1.25+. Prebuilt binaries for Linux, macOS, and Windows (amd64 + arm64), a container
+Requires Go 1.27.3+ to build from source. Prebuilt binaries for Linux, macOS, and Windows (amd64 + arm64), a container
 image, and a Homebrew formula are published on each release via `goreleaser`. Check your build with
 `nexus-cli version`.
 
@@ -126,7 +126,12 @@ nexus-cli approve                                # in another terminal: answer a
 
 `run` starts an in-process gated proxy, mints a token for the command, launches it with
 `HTTP(S)_PROXY` (and, with a CA, `SSL_CERT_FILE` & co.) pointing at the gate, and exits with the
-command's exit code. Optionally log in first so calls are attributed to a verified human:
+command's exit code. The scaffolded `nexus.yaml` allows `GET` to any host but other requests
+(and, without HTTPS interception, every HTTPS tunnel) only to `*.github.com` and `api.openai.com`,
+so add your agent's model API (for Claude Code, `api.anthropic.com`) to `egress.allow` first —
+`nexus-cli audit tail --decision deny` shows what was blocked. Ready-made setups for other agents
+are in [docs/recipes.md](docs/recipes.md). Optionally log in first so calls are attributed to a
+verified human:
 
 ```bash
 nexus-cli login --provider slack                 # authenticate via the nexus-framework Gateway
@@ -140,7 +145,9 @@ nexus-cli doctor                                 # diagnose the local setup
 ## Policy (`nexus.yaml`)
 
 The policy turns the token's scopes into an actual privilege ceiling. Decisions are `allow`, `deny`,
-or `hitl` (human approval). No matching rule → `default_action` (deny).
+or `hitl` (human approval). When no rule matches a request to a host and `egress.allow` is
+non-empty, listed hosts are allowed and all others denied; anything else falls back to
+`default_action` (`deny` when omitted).
 
 ```yaml
 agent: claims-processor-v1
@@ -393,10 +400,12 @@ What `run` does:
 - **Environment** — the child inherits your environment plus `HTTP_PROXY`, `HTTPS_PROXY`,
   `http_proxy`, `https_proxy`, `NEXUS_PROXY_URL` = `http://nexus:<token>@127.0.0.1:<port>`,
   `NO_PROXY`/`no_proxy` (`--no-proxy`, default `localhost,127.0.0.1,::1`), `NODE_USE_ENV_PROXY=1`,
-  and `NEXUS_RUN=1`. With HTTPS interception on, the CA bundle (system roots + nexus CA) is exported
-  as `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `AWS_CA_BUNDLE`,
-  `PIP_CERT`, `CARGO_HTTP_CAINFO`, `DENO_CERT`, `HEX_CACERTS_PATH`, plus `NODE_EXTRA_CA_CERTS` = the
-  nexus CA certificate.
+  `NEXUS_RUN=1`, and `NEXUS_CONTROL_URL` + `NEXUS_CONTROL_TOKEN` for the
+  [SDKs](#embed-in-your-agent-sdks) (a check-only token: it can ask for decisions but cannot list or
+  answer approvals). With HTTPS interception on, the CA bundle (system roots + nexus CA) is exported
+  as `NEXUS_CA_BUNDLE`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`,
+  `AWS_CA_BUNDLE`, `PIP_CERT`, `CARGO_HTTP_CAINFO`, `DENO_CERT`, `HEX_CACERTS_PATH`, plus
+  `NODE_EXTRA_CA_CERTS` = the nexus CA certificate.
 - **Approvals** — the command owns the terminal, so `run` never draws a prompt: it prints a one-line
   notice and you answer with `nexus-cli approve` from another terminal (`--approval-timeout`, default
   2m, then the call is denied).
@@ -690,8 +699,11 @@ code --add-mcp '{"name":"nexus","command":"npx","args":["-y","@whoisnjoguu/nexus
 
 ### Claude Code (MCP)
 
+`nexus-cli init` writes this block to `.claude/mcp.json` (`nexus-cli init --strict` adds `--strict`
+to `args`). Claude Code reads project MCP servers from `.mcp.json` at the repository root, so copy it
+there (or use `claude mcp add` above):
+
 ```json
-// .claude/mcp.json  (generated by `nexus-cli init`)
 {
   "mcpServers": {
     "nexus-security-guardrail": {
@@ -703,7 +715,8 @@ code --add-mcp '{"name":"nexus","command":"npx","args":["-y","@whoisnjoguu/nexus
 ```
 
 In `--strict`, tool calls surface a native approval prompt in Claude Code via MCP elicitation before
-executing (approve once, for the session, or always).
+executing (approve once, for the session, or always). More setups — Copilot CLI, Cursor, SDK
+agents, the background service and CI — are in [docs/recipes.md](docs/recipes.md).
 
 ### GitHub Copilot / VS Code
 
@@ -713,6 +726,22 @@ one-liner above. For HTTP tool traffic, route it through a running `nexus-cli de
 ```bash
 eval "$(nexus-cli run --attach 127.0.0.1:8075 --print-env)"   # sets HTTP(S)_PROXY with a token + CA vars
 ```
+
+## Documentation
+
+| Guide                                        | Covers                                                                  |
+| -------------------------------------------- | ----------------------------------------------------------------------- |
+| [docs/recipes.md](docs/recipes.md)           | Copy-paste setups: Claude Code, Copilot, Cursor, SDKs, service, CI      |
+| [docs/policy.md](docs/policy.md)             | Policy reference: rules, args, taints, egress, lint, reload, protection |
+| [docs/approvals.md](docs/approvals.md)       | `nexus-cli approve`, the web UI and notifications                       |
+| [docs/mcp.md](docs/mcp.md)                   | MCP gateway: upstreams, Streamable HTTP, approvals, status              |
+| [docs/sdk.md](docs/sdk.md)                   | Decision API (`/v1/check`), discovery, Go and Python clients            |
+| [docs/audit.md](docs/audit.md)               | Audit log format, signing, rotation, anchors, sinks, export             |
+| [docs/keys.md](docs/keys.md)                 | Signing keys: keychain/file backends, rotation, JWKS                    |
+| [docs/service.md](docs/service.md)           | Running `dev` as a per-user background service                          |
+| [docs/threat-model.md](docs/threat-model.md) | What is and is not protected; deployment for untrusted agents           |
+| [CHANGELOG.md](CHANGELOG.md)                 | Release notes                                                           |
+| [SECURITY.md](SECURITY.md)                   | Reporting vulnerabilities, supported versions, scope                    |
 
 ## Commands
 
@@ -836,7 +865,8 @@ Contributions are welcome. Please:
 ## Security
 
 `nexus-cli` is a security tool; please report vulnerabilities privately via a GitHub security advisory
-rather than a public issue.
+rather than a public issue — see [SECURITY.md](SECURITY.md). What nexus-cli does and does not defend
+against, and how to deploy it for untrusted agents, is in [docs/threat-model.md](docs/threat-model.md).
 
 ## License
 
@@ -850,7 +880,7 @@ rather than a public issue.
 - With `--require-auth`, downstream attribution is derived from verified JWT claims, not
   client-supplied headers. Tokens are validated for signature, issuer, audience, and expiry.
 - MCP `--strict` fails closed: tool calls are denied unless a human explicitly approves via
-  elicitation.
+  elicitation or `nexus-cli approve`.
 - HTTPS `CONNECT` traffic is inspected per request only when HTTPS interception is on (a CA
   exists, see `nexus-cli ca init`) and the host is not in `egress.passthrough`; otherwise it is
   tunnelled and gated on host only.
