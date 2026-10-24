@@ -2,7 +2,10 @@ package cmd
 
 import (
 	"fmt"
+	"net"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -21,6 +24,8 @@ var (
 	devPolicy   string
 	devNoAudit  bool
 	devInject   bool
+	devListen   string
+	devSingle   bool
 )
 
 var devCmd = &cobra.Command{
@@ -72,10 +77,10 @@ var devCmd = &cobra.Command{
 			fmt.Println("🔑 secretless credential injection enabled (broker-backed)")
 		}
 
-		fmt.Printf("🔒 Starting Nexus Security Proxy on :%d (Strict: %t, RequireAuth: %t, Policy: %t)...\n",
-			proxyPort, strictMode, requireAuth, engine != nil)
-		server := proxy.New(proxy.Config{
+		cfg := proxy.Config{
 			Port:        proxyPort,
+			Listen:      devListen,
+			SingleUse:   devSingle,
 			Strict:      strictMode,
 			RequireAuth: requireAuth,
 			Verifier:    verifier,
@@ -88,9 +93,50 @@ var devCmd = &cobra.Command{
 					fmt.Fprintf(os.Stderr, "note: could not persist rule to %s: %v\n", devPolicy, err)
 				}
 			},
-		})
-		return server.Start()
+		}
+		server := proxy.New(cfg)
+
+		ln, err := net.Listen("tcp", cfg.ListenAddr())
+		if err != nil {
+			return fmt.Errorf("listen on %s: %w", cfg.ListenAddr(), err)
+		}
+		addr := ln.Addr().String()
+		stdout, stderr := cmd.OutOrStdout(), cmd.ErrOrStderr()
+		if !isLoopbackAddr(addr) {
+			fmt.Fprintf(stderr, "⚠️  WARNING: proxy is listening on non-loopback address %s — it is reachable from other machines.\n", addr)
+			if !requireAuth {
+				fmt.Fprintln(stderr, "⚠️  WARNING: --require-auth=false on a non-loopback address lets anyone on the network use this proxy.")
+			}
+		}
+		tokenMode := "reusable until expiry (single_use tokens are one-shot)"
+		if devSingle {
+			tokenMode = "single-use"
+		}
+		fmt.Fprintf(stdout, "🔒 Nexus Security Proxy listening on %s (Strict: %t, RequireAuth: %t, Tokens: %s)\n",
+			addr, strictMode, requireAuth, tokenMode)
+		fmt.Fprintf(stdout, "   health: http://%s/_nexus/health · agents: HTTP_PROXY=http://agent:<token>@%s\n", addr, addr)
+
+		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := server.Serve(ctx, ln); err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, "🛑 proxy stopped")
+		return nil
 	},
+}
+
+// isLoopbackAddr reports whether a host:port binds only the loopback interface.
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func init() {
@@ -100,5 +146,7 @@ func init() {
 	devCmd.Flags().StringVar(&devKeyPath, "key", "", "Path to the persistent Ed25519 key (default ~/.nexus/ed25519.key)")
 	devCmd.Flags().StringVar(&devPolicy, "policy", "nexus.yaml", "Path to the policy file")
 	devCmd.Flags().BoolVar(&devNoAudit, "no-audit", false, "Disable the tamper-evident audit log")
+	devCmd.Flags().StringVar(&devListen, "listen", "", "Address to bind as host:port (default 127.0.0.1:<port>; non-loopback exposes the proxy to the network)")
+	devCmd.Flags().BoolVar(&devSingle, "single-use", false, "Reject any reuse of a token (default: tokens are reusable until expiry unless minted --single-use)")
 	devCmd.Flags().BoolVar(&devInject, "inject", false, "Inject broker-issued upstream credentials for rules marked inject: true")
 }
