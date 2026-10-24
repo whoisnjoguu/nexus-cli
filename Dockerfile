@@ -1,4 +1,5 @@
 # syntax=docker/dockerfile:1
+# check=skip=SecretsUsedInArgOrEnv
 #
 # nexus-cli sidecar image. The release workflow builds it with goreleaser (dockers_v2) from the
 # prebuilt linux binaries; build it locally with `make docker`.

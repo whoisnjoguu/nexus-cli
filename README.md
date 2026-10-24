@@ -98,6 +98,9 @@ curl -fsSL https://raw.githubusercontent.com/whoisnjoguu/nexus-cli/master/instal
 curl -fsSL https://raw.githubusercontent.com/whoisnjoguu/nexus-cli/master/install.sh | NEXUS_VERSION=v0.2.0 sh   # pin a version
 ```
 
+**Container** — `docker run -d -p 127.0.0.1:8075:8075 -v nexus-data:/home/nonroot/.nexus ghcr.io/whoisnjoguu/nexus-cli`
+(distroless, nonroot, amd64 + arm64; see [docs/docker.md](docs/docker.md))
+
 **Homebrew** — `brew install whoisnjoguu/tap/nexus-cli` · **Go** — `go install github.com/whoisnjoguu/nexus-cli@latest`
 
 **From source:**
@@ -473,6 +476,19 @@ The service runs `dev` with an absolute policy path and the same `NEXUS_HOME`, s
 `approve` and `doctor` find it — **`NEXUS_HOME` must match** in your shell. See
 [docs/service.md](docs/service.md) for flags, hardening, linger and Windows limitations.
 
+### Run in a container
+
+```bash
+docker run -d --name nexus --read-only -p 127.0.0.1:8075:8075 \
+  -v nexus-data:/home/nonroot/.nexus -v "$PWD/policy:/etc/nexus:ro" \
+  -e NEXUS_POLICY=/etc/nexus/nexus.yaml ghcr.io/whoisnjoguu/nexus-cli
+docker exec nexus nexus-cli identity mint -a my-agent -u alice -q   # token for HTTP_PROXY
+docker exec -it nexus nexus-cli approve                             # answer approvals
+```
+
+See [docs/docker.md](docs/docker.md) for Compose (with an internal agent network), HTTPS
+interception and `make docker`.
+
 ### HTTPS interception
 
 Without a CA, HTTPS is tunnelled via `CONNECT` and gated on the **host** only. Create a local CA and
@@ -739,6 +755,7 @@ eval "$(nexus-cli run --attach 127.0.0.1:8075 --print-env)"   # sets HTTP(S)_PRO
 | [docs/audit.md](docs/audit.md)               | Audit log format, signing, rotation, anchors, sinks, export             |
 | [docs/keys.md](docs/keys.md)                 | Signing keys: keychain/file backends, rotation, JWKS                    |
 | [docs/service.md](docs/service.md)           | Running `dev` as a per-user background service                          |
+| [docs/docker.md](docs/docker.md)             | Container image, Compose, building it yourself                          |
 | [docs/threat-model.md](docs/threat-model.md) | What is and is not protected; deployment for untrusted agents           |
 | [CHANGELOG.md](CHANGELOG.md)                 | Release notes                                                           |
 | [SECURITY.md](SECURITY.md)                   | Reporting vulnerabilities, supported versions, scope                    |
@@ -848,7 +865,8 @@ a Homebrew formula.
 
 ```bash
 git tag v0.1.0 && git push origin v0.1.0     # triggers .github/workflows/release.yml
-goreleaser release --snapshot --clean         # dry-run locally (no publish)
+goreleaser release --snapshot --clean         # dry-run locally (no publish; builds per-arch images)
+make docker                                   # local image only (nexus-cli:dev)
 ```
 
 Optional secrets: `HOMEBREW_TAP_TOKEN` (PAT for the tap repo; brew step is skipped if unset). GHCR

@@ -54,11 +54,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - A daemon `Client` in `sdk/go`.
   - Python SDK 0.2.0 (`nexus-agent-sdk`): discovery-based `Client`/`AsyncClient`, `guard`
     decorator, and `requests`/`httpx` helpers.
+- Container image `ghcr.io/whoisnjoguu/nexus-cli` (distroless, nonroot, `linux/amd64` and
+  `linux/arm64`) published by the release workflow, `make docker` for local builds, and a CI job
+  that builds and smoke-tests it. See `docs/docker.md`.
 - `nexus-cli doctor` reports keychain, audit chain, MCP upstream and service health.
 - `nexus-cli identity mint -q` prints only the token.
 - CI runs on Linux, macOS and Windows, and tests the Python SDK.
 - Documentation: `docs/threat-model.md`, `docs/recipes.md`, `SECURITY.md`, and guides for
-  approvals, audit, keys, MCP, policy, SDK and service.
+  approvals, audit, containers, keys, MCP, policy, SDK and service.
 
 ### Changed
 
@@ -75,6 +78,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Starting without a policy file no longer logs a failed hot reload, and the missing-file message
+  no longer repeats "keeping the current policy".
+- `approve --help` showed a bogus value placeholder for `--pid`.
 - The proxy speaks HTTP/1.1 upstream, which fixes 502s caused by HTTP/2 ALPN negotiation. It also
   reports clients that reject the interception CA.
 - `--strict` now escalates policy allows to approval. Previously it was a no-op when a policy

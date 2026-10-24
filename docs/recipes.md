@@ -16,6 +16,7 @@ you start in your project directory.
 - [A Go program with `sdk/go`](#a-go-program-with-sdkgo)
 - [`dev` as a background service plus `run --attach`](#dev-as-a-background-service-plus-run---attach)
 - [CI: an agent in GitHub Actions](#ci-an-agent-in-github-actions)
+- [Containers: nexus as a sidecar](#containers-nexus-as-a-sidecar)
 
 ## Start: scaffold a project
 
@@ -352,3 +353,9 @@ jobs:
   after it was written within the job. Archive `audit.pub` with the log, or keep a long-lived
   `audit.key_path` secret if you need signatures that persist across jobs.
 - `run` exits with the agent's exit status, so a failing agent fails the step.
+
+## Containers: nexus as a sidecar
+
+Run the proxy from the published image and put the agent on an internal network, so the proxy is
+its only route out. The full Compose file, token minting and approvals are in
+[docs/docker.md](docker.md#docker-compose).
