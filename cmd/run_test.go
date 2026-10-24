@@ -373,7 +373,7 @@ func TestRunEnforcesPolicyAndAudits(t *testing.T) {
 		t.Fatalf("upstream saw %v", paths)
 	}
 
-	entries, err := audit.Tail(filepath.Join(e.home, ".nexus", "audit.jsonl"), 50)
+	entries, err := audit.Tail(filepath.Join(e.nexus, "audit.jsonl"), 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,5 +598,62 @@ func TestPolicyScopesUnion(t *testing.T) {
 	p := policy.Policy{Tools: []policy.Rule{{Scope: "write"}, {Scope: "read"}, {Scope: "write"}, {}}}
 	if got := strings.Join(policyScopes(p), ","); got != "read,write" {
 		t.Fatalf("policyScopes = %q", got)
+	}
+}
+
+func TestRunHonoursAuditConfig(t *testing.T) {
+	e := newRunEnv(t)
+	var mu sync.Mutex
+	var received []string
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer sink-secret" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		received = append(received, string(body))
+		mu.Unlock()
+	}))
+	defer sink.Close()
+	t.Setenv("TEST_SINK_TOKEN", "sink-secret")
+
+	logPath := filepath.Join(e.dir, "custom", "audit.jsonl")
+	cfg := runTestPolicy + `audit:
+  path: ` + logPath + `
+  sign: true
+  sinks:
+    - type: webhook
+      url: ` + sink.URL + `
+      headers:
+        Authorization: "Bearer ${TEST_SINK_TOKEN}"
+`
+	if err := os.WriteFile(e.policy, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.run([]string{"--mitm", "off"}, "fetch", "GET", "http://example.com/allowed", "http://example.com/denied"); err != nil {
+		t.Fatalf("run: %v; stderr=%s", err, e.stderr.String())
+	}
+
+	if _, err := os.Stat(filepath.Join(e.nexus, "audit.jsonl")); err == nil {
+		t.Fatal("audit written to the default path despite audit.path")
+	}
+	pub, err := audit.LoadPublicKeys(filepath.Join(e.nexus, "audit.pub"))
+	if err != nil {
+		t.Fatalf("audit.pub: %v", err)
+	}
+	res, err := audit.VerifyWithOptions(logPath, audit.VerifyOptions{PublicKeys: pub, RequireSigned: true})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if res.Entries != 2 || !res.SigsChecked || res.Signed != 2 {
+		t.Fatalf("verify result = %+v", res)
+	}
+	// Close() on shutdown must have flushed the webhook batch.
+	mu.Lock()
+	defer mu.Unlock()
+	all := strings.Join(received, "\n")
+	if !strings.Contains(all, "example.com/allowed") || !strings.Contains(all, "example.com/denied") {
+		t.Fatalf("webhook received %q", all)
 	}
 }

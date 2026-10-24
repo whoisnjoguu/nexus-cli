@@ -287,6 +287,10 @@ func auditLogPath() (string, error) {
 	if auditPath != "" {
 		return auditPath, nil
 	}
+	// Honour `audit.path` from ./nexus.yaml so verify/tail read the log dev/run actually write.
+	if cfg, exists, err := loadConfig("nexus.yaml"); err == nil && exists {
+		return cfg.Audit.ResolvedPath()
+	}
 	return audit.DefaultPath()
 }
 

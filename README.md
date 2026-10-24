@@ -273,8 +273,23 @@ nexus-cli dev --inject
 Services can verify nexus-issued tokens themselves instead of trusting proxy headers:
 
 ```bash
-nexus-cli keys jwks    # prints the Ed25519 public key as a JSON Web Key Set
+nexus-cli keys jwks    # prints the current + retired Ed25519 public keys (with `kid`) as a JWKS
 ```
+
+### Signing key management
+
+The signing key lives in the OS keychain when one is available (`NEXUS_KEY_BACKEND=auto`, the
+default), otherwise in `$NEXUS_HOME/ed25519.key` (0600). Force a backend with
+`NEXUS_KEY_BACKEND=keychain|file`.
+
+```bash
+nexus-cli keys show                     # kid, backend, public key, location
+nexus-cli keys rotate                   # new key; old one stays valid for verification
+nexus-cli keys migrate --to keychain    # move a file key into the OS keychain
+nexus-cli keys prune --older-than 720h  # drop long-retired keys
+```
+
+See [docs/keys.md](docs/keys.md) for the threat model and details.
 
 ## Gate a command: `nexus-cli run`
 
@@ -434,12 +449,34 @@ injection or a gated upstream MCP server) so the secret stays in the broker.
 
 ## Audit log
 
-Every decision is appended to a hash-chained JSONL log at `~/.nexus/audit.jsonl`:
+Every decision is appended to a hash-chained JSONL log at `$NEXUS_HOME/audit.jsonl` (default
+`~/.nexus/audit.jsonl`). It is fsync'd, rotated at 10 MiB, and safe for concurrent writers
+(`dev`, `run` and `mcp serve` at once).
 
 ```bash
-nexus-cli audit tail -n 20    # recent decisions
-nexus-cli audit verify        # confirm the chain is intact (detects edits/deletions)
+nexus-cli audit tail -n 20 -f --agent my-agent   # recent decisions, then follow
+nexus-cli audit verify                           # chain + signatures (detects edits/deletions)
+nexus-cli audit head                             # record this hash somewhere off-machine…
+nexus-cli audit verify --anchor <hash>           # …and later prove history up to it is intact
+nexus-cli audit export --format csv --since 24h  # for spreadsheets / SIEM import
 ```
+
+Configure signing and off-box sinks in `nexus.yaml` (`${ENV}` is expanded in URLs and headers):
+
+```yaml
+audit:
+  sign: true # Ed25519-sign every entry ($NEXUS_HOME/audit.key / audit.pub)
+  sinks:
+    - type: webhook
+      url: https://siem.example.com/ingest
+      headers: { Authorization: "Bearer ${SIEM_TOKEN}" }
+    - type: syslog
+      network: udp
+      addr: logs.example.com:514
+```
+
+A process running as your user can rewrite a local log; anchors and remote sinks are what make
+that detectable. See [docs/audit.md](docs/audit.md).
 
 ## Embed in your agent (SDKs)
 
@@ -539,9 +576,14 @@ eval "$(nexus-cli run --attach 127.0.0.1:8075 --print-env)"   # sets HTTP(S)_PRO
 | `nexus-cli mcp serve`      | Serve / aggregate MCP tool servers behind the policy   |
 | `nexus-cli policy edit`    | Interactive TUI policy editor (writes `nexus.yaml`)    |
 | `nexus-cli policy test`    | Dry-run a tool call against the policy                 |
-| `nexus-cli audit tail`     | Show recent authorization decisions                    |
-| `nexus-cli audit verify`   | Verify the audit hash chain                            |
-| `nexus-cli keys jwks`      | Print the public verification key as a JWKS            |
+| `nexus-cli audit tail`     | Show recent decisions (`-f` to follow, filters)        |
+| `nexus-cli audit verify`   | Verify the audit hash chain, signatures and anchor     |
+| `nexus-cli audit head`     | Print the chain head to store as an off-machine anchor |
+| `nexus-cli audit export`   | Export decisions as JSONL or CSV                       |
+| `nexus-cli audit keygen`   | Create the audit signing key pair                      |
+| `nexus-cli keys jwks`      | Print the public verification keys as a JWKS           |
+| `nexus-cli keys show`      | Show signing key id, backend and location              |
+| `nexus-cli keys rotate`    | Rotate the signing key (`migrate`, `prune` also exist) |
 | `nexus-cli doctor`         | Diagnose the local setup                               |
 | `nexus-cli version`        | Print the version, commit, and platform                |
 
@@ -626,8 +668,9 @@ rather than a public issue.
 
 ## Security Notes
 
-- Tokens are signed with a persistent Ed25519 key at `~/.nexus/ed25519.key` (0600),
-  shared by `identity mint`, the proxy verifier, and the MCP server. Override with `--key`.
+- Tokens are signed with a persistent Ed25519 key stored in the OS keychain when available, else
+  `~/.nexus/ed25519.key` (0600), shared by `identity mint`, the proxy verifier, and the MCP server.
+  Override with `--key` / `NEXUS_KEY_BACKEND`; set `NEXUS_HOME` to relocate `~/.nexus`.
 - With `--require-auth`, downstream attribution is derived from verified JWT claims, not
   client-supplied headers. Tokens are validated for signature, issuer, audience, and expiry.
 - MCP `--strict` fails closed: tool calls are denied unless a human explicitly approves via

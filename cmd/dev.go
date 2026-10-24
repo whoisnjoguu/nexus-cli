@@ -74,14 +74,12 @@ var devCmd = &cobra.Command{
 
 		var auditlog *audit.Logger
 		if !devNoAudit {
-			apath, err := audit.DefaultPath()
+			var apath string
+			auditlog, apath, err = openAuditLog(devPolicy)
 			if err != nil {
 				return err
 			}
-			auditlog, err = audit.Open(apath)
-			if err != nil {
-				return err
-			}
+			defer auditlog.Close()
 			fmt.Fprintf(stdout, "📓 audit log: %s\n", apath)
 		}
 
@@ -184,7 +182,7 @@ func init() {
 	devCmd.Flags().IntVarP(&proxyPort, "port", "p", 8075, "Port to run the local proxy on")
 	devCmd.Flags().BoolVarP(&strictMode, "strict", "s", false, "Require HITL approval for all calls including GET")
 	devCmd.Flags().BoolVar(&requireAuth, "require-auth", true, "Reject requests without a valid dual-actor micro-JWT (use --require-auth=false to disable)")
-	devCmd.Flags().StringVar(&devKeyPath, "key", "", "Path to the persistent Ed25519 key (default ~/.nexus/ed25519.key)")
+	devCmd.Flags().StringVar(&devKeyPath, "key", "", "Path to the persistent Ed25519 key (default $NEXUS_HOME/ed25519.key or ~/.nexus/ed25519.key)")
 	devCmd.Flags().StringVar(&devPolicy, "policy", "nexus.yaml", "Path to the policy file")
 	devCmd.Flags().BoolVar(&devNoAudit, "no-audit", false, "Disable the tamper-evident audit log")
 	devCmd.Flags().StringVar(&devListen, "listen", "", "Address to bind as host:port (default 127.0.0.1:<port>; non-loopback exposes the proxy to the network)")

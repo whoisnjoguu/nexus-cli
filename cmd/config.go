@@ -6,6 +6,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/whoisnjoguu/nexus-cli/pkg/audit"
 	"github.com/whoisnjoguu/nexus-cli/pkg/mcp"
 	"github.com/whoisnjoguu/nexus-cli/pkg/policy"
 )
@@ -16,6 +17,7 @@ type configFile struct {
 	MCP           struct {
 		Upstreams []mcp.UpstreamSpec `yaml:"upstreams"`
 	} `yaml:"mcp"`
+	Audit audit.Config `yaml:"audit,omitempty"`
 }
 
 // loadConfig reads nexus.yaml
@@ -45,4 +47,23 @@ func appendPolicyRule(path string, rule policy.Rule) error {
 	// Prepend so the new allow wins over a broader hitl/deny below it.
 	cfg.Policy.Tools = append([]policy.Rule{rule}, cfg.Policy.Tools...)
 	return writeConfig(path, cfg)
+}
+
+// openAuditLog opens the audit log configured by the `audit:` section of the policy file at
+// policyPath (signing, rotation, fsync, off-box sinks), falling back to defaults when the file or
+// section is absent. It returns the logger and the active log path.
+func openAuditLog(policyPath string) (*audit.Logger, string, error) {
+	cfg, _, err := loadConfig(policyPath)
+	if err != nil {
+		return nil, "", err
+	}
+	path, err := cfg.Audit.ResolvedPath()
+	if err != nil {
+		return nil, "", err
+	}
+	l, err := cfg.Audit.Open()
+	if err != nil {
+		return nil, "", fmt.Errorf("open audit log: %w", err)
+	}
+	return l, path, nil
 }

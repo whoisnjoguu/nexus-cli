@@ -125,7 +125,7 @@ func init() {
 	identityMintCmd.Flags().IntVarP(&ttlSec, "ttl", "t", 900, "Token validity in seconds (proxy tokens are reusable until expiry unless --single-use)")
 	identityMintCmd.Flags().BoolVar(&mintOne, "single-use", false, "Mark the token single-use: the proxy rejects any second request with it")
 	identityMintCmd.Flags().BoolVarP(&mintQ, "quiet", "q", false, "Print only the token")
-	identityMintCmd.Flags().StringVar(&mintKey, "key", "", "Path to the persistent Ed25519 key (default ~/.nexus/ed25519.key)")
+	identityMintCmd.Flags().StringVar(&mintKey, "key", "", "Path to the persistent Ed25519 key (default $NEXUS_HOME/ed25519.key or ~/.nexus/ed25519.key)")
 
 	_ = identityMintCmd.MarkFlagRequired("agent-id")
 }

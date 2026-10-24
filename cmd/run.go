@@ -210,11 +210,8 @@ func runResolveActor(warn io.Writer) (actAs string, ceiling []string, connID, ga
 func startRunProxy(pol policy.Policy, signer *jwt.TokenSigner, mitmCA *ca.CA, stderr io.Writer) (string, func(), error) {
 	var auditlog *audit.Logger
 	if !runNoAudit {
-		apath, err := audit.DefaultPath()
-		if err != nil {
-			return "", nil, err
-		}
-		if auditlog, err = audit.Open(apath); err != nil {
+		var err error
+		if auditlog, _, err = openAuditLog(runPolicy); err != nil {
 			return "", nil, err
 		}
 	}
@@ -253,6 +250,9 @@ func startRunProxy(pol policy.Policy, signer *jwt.TokenSigner, mitmCA *ca.CA, st
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
+		if auditlog != nil {
+			_ = auditlog.Close()
+		}
 		return "", nil, fmt.Errorf("listen: %w", err)
 	}
 	addr := ln.Addr().String()
@@ -272,6 +272,11 @@ func startRunProxy(pol policy.Policy, signer *jwt.TokenSigner, mitmCA *ca.CA, st
 		}
 		if ctl != nil {
 			_ = ctl.Close()
+		}
+		if auditlog != nil {
+			if err := auditlog.Close(); err != nil {
+				fmt.Fprintf(stderr, "[nexus] audit close: %v\n", err)
+			}
 		}
 	}
 	return addr, shutdown, nil
@@ -455,7 +460,7 @@ func init() {
 	f.StringVar(&runNoProxy, "no-proxy", "localhost,127.0.0.1,::1", "NO_PROXY value for the command")
 	f.DurationVar(&runTimeout, "approval-timeout", 120*time.Second, "How long a call waits for 'nexus-cli approve' before it is denied")
 	f.BoolVar(&runNoAudit, "no-audit", false, "Disable the tamper-evident audit log")
-	f.StringVar(&runKey, "key", "", "Path to the persistent Ed25519 key (default ~/.nexus/ed25519.key)")
+	f.StringVar(&runKey, "key", "", "Path to the persistent Ed25519 key (default $NEXUS_HOME/ed25519.key or ~/.nexus/ed25519.key)")
 	f.BoolVar(&runPrintEnv, "print-env", false, "With --attach: print 'export' lines for eval instead of running a command")
 	f.StringVarP(&runUserID, "user-id", "u", "", "Human principal fallback when not logged in")
 	rootCmd.AddCommand(runCmd)
