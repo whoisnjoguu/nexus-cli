@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -105,6 +107,9 @@ func (p *ProxyServer) serveMITM(raw net.Conn, hostname, upstreamHost string, id 
 	<-closed
 	_ = ln.Close()
 	<-served
+	if err := nc.rejectedBeforeRequest(); err != nil {
+		p.handshakeFailed(hostname, upstreamHost, id, err)
+	}
 }
 
 // handleInner gates one decrypted request from an intercepted tunnel.
@@ -191,6 +196,38 @@ type notifyConn struct {
 	net.Conn
 	once   sync.Once
 	closed chan struct{}
+
+	mu       sync.Mutex
+	gotData  bool
+	firstErr error // the read error that ended the conn before any request bytes arrived
+}
+
+func (c *notifyConn) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	c.mu.Lock()
+	if n > 0 {
+		c.gotData = true
+	} else if err != nil && !c.gotData && c.firstErr == nil {
+		c.firstErr = err
+	}
+	c.mu.Unlock()
+	return n, err
+}
+
+// rejectedBeforeRequest reports a client that aborted (TLS alert or reset) after the handshake but
+// before sending a request: clients such as curl verify the certificate only once the handshake has
+// completed, so their rejection never surfaces as a handshake error. A clean close is not counted.
+func (c *notifyConn) rejectedBeforeRequest() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.gotData || c.firstErr == nil {
+		return nil
+	}
+	var alert tls.AlertError
+	if errors.As(c.firstErr, &alert) || errors.Is(c.firstErr, syscall.ECONNRESET) {
+		return c.firstErr
+	}
+	return nil
 }
 
 func (c *notifyConn) Close() error {

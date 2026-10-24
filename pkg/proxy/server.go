@@ -705,6 +705,17 @@ func (p *ProxyServer) defaultTransport() http.RoundTripper {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.ForceAttemptHTTP2 = false
 	t.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	// The clone inherits ALPN "h2" from DefaultTransport's TLS config; offering it while speaking
+	// HTTP/1.1 makes h2-capable upstreams hang up.
+	var protos http.Protocols
+	protos.SetHTTP1(true)
+	t.Protocols = &protos
+	if t.TLSClientConfig == nil {
+		t.TLSClientConfig = &tls.Config{}
+	} else {
+		t.TLSClientConfig = t.TLSClientConfig.Clone()
+	}
+	t.TLSClientConfig.NextProtos = []string{"http/1.1"}
 	t.Proxy = func(r *http.Request) (*url.URL, error) {
 		u, err := http.ProxyFromEnvironment(r)
 		if err != nil || u == nil {

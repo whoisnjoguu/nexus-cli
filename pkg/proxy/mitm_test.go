@@ -675,3 +675,77 @@ func TestStrictEscalatesPolicyAllows(t *testing.T) {
 		t.Fatalf("strict: approver calls = %d (%+v), want 1 (session approval sticks)", ap.calls(), ap.reqs)
 	}
 }
+
+// The default upstream transport must speak HTTP/1.1 even to HTTP/2-capable servers (a clone of
+// http.DefaultTransport otherwise still offers "h2" via ALPN and the upstream hangs up).
+func TestDefaultTransportHTTP1ToH2Upstream(t *testing.T) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, r.Proto)
+	}))
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	defer srv.Close()
+
+	tr, ok := New(Config{}).transport.(*http.Transport)
+	if !ok {
+		t.Fatal("default transport is not *http.Transport")
+	}
+	if tr.TLSClientConfig.InsecureSkipVerify {
+		t.Fatal("default transport must verify upstream certificates")
+	}
+	tr.TLSClientConfig.RootCAs = srv.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs
+	resp, err := (&http.Client{Transport: tr, Timeout: 10 * time.Second}).Get(srv.URL)
+	if err != nil {
+		t.Fatalf("h2-capable upstream: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(body) != "HTTP/1.1" {
+		t.Fatalf("upstream saw %q, want HTTP/1.1", body)
+	}
+}
+
+// Clients like curl finish the TLS handshake and only then verify the certificate, aborting with a
+// reset before sending any request. That must be reported like a handshake rejection, while a
+// client that simply closes an idle tunnel must not be.
+func TestMITMPostHandshakeRejection(t *testing.T) {
+	h := newMITM(t, policy.Policy{Tools: []policy.Rule{get("/zen")}}, nil)
+	tok := h.token(jwt.MintOptions{})
+	handshake := func() (*net.TCPConn, *tls.Conn) {
+		conn, br, resp := rawConnect(t, h.proxyURL.Host, "example.com:443", tok)
+		if resp.StatusCode != http.StatusOK || br.Buffered() != 0 {
+			t.Fatalf("CONNECT = %d", resp.StatusCode)
+		}
+		tc := tls.Client(conn, &tls.Config{ServerName: "example.com", RootCAs: h.ca.Pool()})
+		if err := tc.Handshake(); err != nil {
+			t.Fatal(err)
+		}
+		return conn.(*net.TCPConn), tc
+	}
+
+	_, clean := handshake()
+	_ = clean.Close()
+	time.Sleep(200 * time.Millisecond)
+	if entries := h.auditEntries(); len(entries) != 0 {
+		t.Fatalf("clean close audited as rejection: %+v", entries)
+	}
+
+	raw, _ := handshake()
+	_ = raw.SetLinger(0)
+	_ = raw.Close() // RST without a request, as curl does after failing verification
+	want := "client rejected nexus CA for example.com"
+	deadline := time.Now().Add(5 * time.Second)
+	var entries []audit.Entry
+	for time.Now().Before(deadline) {
+		if entries = h.auditEntries(); len(entries) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(entries) != 1 || entries[0].Decision != "deny" || !strings.HasPrefix(entries[0].Reason, want) {
+		t.Fatalf("audit = %+v, want one rejection", entries)
+	}
+	if !strings.Contains(h.stderr.String(), want) {
+		t.Fatalf("missing stderr hint: %q", h.stderr.String())
+	}
+}
