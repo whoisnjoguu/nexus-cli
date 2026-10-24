@@ -170,7 +170,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		if !polExists {
-			fmt.Fprintf(stderr, "[nexus] no %s found — using the safe-tier default policy\n", runPolicy)
+			fmt.Fprintf(stderr, "[nexus] no %s found — using the safe-tier default policy\n", rt.Path)
 		}
 	}
 	defer shutdown()
@@ -474,7 +474,7 @@ func init() {
 	f.StringVarP(&runAgentID, "agent-id", "a", "", "Agent ID for the token (default: the command's base name)")
 	f.StringVarP(&runScopes, "scopes", "s", "", "Comma-separated scopes (default: every scope required by the policy, capped by your login ceiling)")
 	f.DurationVar(&runTTL, "ttl", 12*time.Hour, "Token lifetime, i.e. the maximum run duration")
-	f.StringVar(&runPolicy, "policy", "nexus.yaml", policyFlagHelp+" (falls back to the safe-tier default)")
+	f.StringVar(&runPolicy, "policy", "", policyFlagHelp+" (falls back to the safe-tier default)")
 	f.BoolVar(&runStrict, "strict", false, "Require approval for every call, including ones the policy allows")
 	f.BoolVar(&runInject, "inject", false, "Inject broker-issued upstream credentials for rules marked inject: true")
 	f.StringVar(&runMITM, "mitm", "auto", "HTTPS interception: auto (on if a CA exists), on (create the CA if needed), off")

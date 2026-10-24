@@ -71,7 +71,7 @@ func init() {
 	policyTestCmd.Flags().StringVar(&ptTool, "tool", "", "MCP tool name (for tool-match rules)")
 	policyTestCmd.Flags().StringVar(&ptProvider, "provider", "", "Provider name (for request_access/get_credential rules)")
 	policyTestCmd.Flags().StringVar(&ptScopes, "scopes", "", "Comma-separated scopes carried by the token")
-	policyTestCmd.Flags().StringVar(&ptFile, "policy", "nexus.yaml", policyFlagHelp)
+	policyTestCmd.Flags().StringVar(&ptFile, "policy", "", policyFlagHelp)
 
 	policyCmd.AddCommand(policyTestCmd)
 	rootCmd.AddCommand(policyCmd)

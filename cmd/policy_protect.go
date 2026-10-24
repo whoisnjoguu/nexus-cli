@@ -196,9 +196,9 @@ Re-run this command after reviewing a hand edit. --remove deletes the pin.`,
 }
 
 func init() {
-	policyProtectCmd.Flags().String("policy", "nexus.yaml", policyFlagHelp)
+	policyProtectCmd.Flags().String("policy", "", policyFlagHelp)
 	policyProtectCmd.Flags().BoolVar(&protectKeep, "keep", false, "Copy instead of move (leave the original file)")
-	policyPinCmd.Flags().String("policy", "nexus.yaml", policyFlagHelp)
+	policyPinCmd.Flags().String("policy", "", policyFlagHelp)
 	policyPinCmd.Flags().BoolVar(&pinRemove, "remove", false, "Remove the pin instead of writing it")
 	policyCmd.AddCommand(policyProtectCmd, policyPinCmd)
 }

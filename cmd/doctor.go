@@ -201,6 +201,6 @@ func check(pass bool, msg string) {
 }
 
 func init() {
-	doctorCmd.Flags().StringVar(&doctorPolicy, "policy", "nexus.yaml", policyFlagHelp)
+	doctorCmd.Flags().StringVar(&doctorPolicy, "policy", "", policyFlagHelp)
 	rootCmd.AddCommand(doctorCmd)
 }

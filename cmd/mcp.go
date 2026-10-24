@@ -339,7 +339,7 @@ var errNoHTTPForStdio = errors.New("--stdio only makes sense together with --htt
 func init() {
 	mcpServeCmd.Flags().BoolVar(&mcpStrict, "strict", false, "Require HITL approval for every tool call")
 	mcpServeCmd.Flags().StringVar(&mcpKey, "key", "", "Path to the persistent Ed25519 key (default ~/.nexus/ed25519.key)")
-	mcpServeCmd.Flags().StringVar(&mcpPolicy, "policy", "nexus.yaml", policyFlagHelp)
+	mcpServeCmd.Flags().StringVar(&mcpPolicy, "policy", "", policyFlagHelp)
 	mcpServeCmd.Flags().BoolVar(&mcpNoReload, "no-reload", false, "Disable policy hot reload (file polling and SIGHUP)")
 	mcpServeCmd.Flags().BoolVar(&mcpEphemeral, "ephemeral-state", false, "Keep one_time and taint state in memory only (lost on restart)")
 	mcpServeCmd.Flags().BoolVar(&mcpAcceptChange, "accept-policy-change", false, "Accept (and re-pin) a policy whose sha256 differs from $NEXUS_HOME/policy.pin")

@@ -81,7 +81,7 @@ func lintPolicyFile(path string) ([]policy.Issue, error) {
 }
 
 func init() {
-	policyLintCmd.Flags().StringVar(&plFile, "policy", "nexus.yaml", policyFlagHelp)
+	policyLintCmd.Flags().StringVar(&plFile, "policy", "", policyFlagHelp)
 	policyLintCmd.Flags().BoolVar(&plJSON, "json", false, "Print issues as JSON")
 	policyLintCmd.Flags().BoolVar(&plStrict, "strict-warnings", false, "Exit 1 on warnings as well as errors")
 	policyCmd.AddCommand(policyLintCmd)

@@ -100,7 +100,7 @@ func writePolicyBytes(path string, data []byte) error {
 }
 
 func init() {
-	policyEditCmd.Flags().StringVar(&peFile, "policy", "nexus.yaml", policyFlagHelp)
+	policyEditCmd.Flags().StringVar(&peFile, "policy", "", policyFlagHelp)
 	policyEditCmd.Flags().StringVar(&peGateway, "gateway", "", "Gateway URL for the provider catalog (or NEXUS_GATEWAY_URL / session)")
 	policyCmd.AddCommand(policyEditCmd)
 }

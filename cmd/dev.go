@@ -198,7 +198,7 @@ func init() {
 	devCmd.Flags().BoolVarP(&strictMode, "strict", "s", false, "Require HITL approval for all calls including GET")
 	devCmd.Flags().BoolVar(&requireAuth, "require-auth", true, "Reject requests without a valid dual-actor micro-JWT (use --require-auth=false to disable)")
 	devCmd.Flags().StringVar(&devKeyPath, "key", "", "Path to the persistent Ed25519 key (default $NEXUS_HOME/ed25519.key or ~/.nexus/ed25519.key)")
-	devCmd.Flags().StringVar(&devPolicy, "policy", "nexus.yaml", policyFlagHelp)
+	devCmd.Flags().StringVar(&devPolicy, "policy", "", policyFlagHelp)
 	devCmd.Flags().BoolVar(&devNoAudit, "no-audit", false, "Disable the tamper-evident audit log")
 	devCmd.Flags().StringVar(&devListen, "listen", "", "Address to bind as host:port (default 127.0.0.1:<port>; non-loopback exposes the proxy to the network)")
 	devCmd.Flags().BoolVar(&devSingle, "single-use", false, "Reject any reuse of a token (default: tokens are reusable until expiry unless minted --single-use)")
