@@ -31,6 +31,7 @@ var (
 	devSingle   bool
 	devTimeout  time.Duration
 	devMITM     string
+	devNoReload bool
 )
 
 var devCmd = &cobra.Command{
@@ -61,26 +62,32 @@ var devCmd = &cobra.Command{
 			return err
 		}
 
-		pol, agent, exists, err := loadPolicyOrDefault(devPolicy)
+		policyPath := devPolicy
+		rt, err := loadPolicyRuntime(policyPath)
 		if err != nil {
 			return err
 		}
-		engine := policy.NewEngine(pol)
-		if exists {
-			fmt.Fprintf(stdout, "📜 policy loaded from %s (agent: %s)\n", devPolicy, agent)
+		pol, engine := rt.Policy, rt.Engine
+		if rt.Exists {
+			fmt.Fprintf(stdout, "📜 policy loaded from %s (agent: %s)\n", policyPath, rt.Config.Agent)
 		} else {
-			fmt.Fprintf(stdout, "📜 no %s found — using the safe-tier default policy (reads allowed, writes ask, shell denied)\n", devPolicy)
+			fmt.Fprintf(stdout, "📜 no %s found — using the safe-tier default policy (reads allowed, writes ask, shell denied)\n", policyPath)
 		}
 
 		var auditlog *audit.Logger
 		if !devNoAudit {
 			var apath string
-			auditlog, apath, err = openAuditLog(devPolicy)
+			auditlog, apath, err = rt.openAudit()
 			if err != nil {
 				return err
 			}
 			defer auditlog.Close()
 			fmt.Fprintf(stdout, "📓 audit log: %s\n", apath)
+		}
+		if !devNoReload {
+			rt.watch(auditlog, stderr, false)
+			defer rt.Close()
+			fmt.Fprintf(stdout, "♻️  policy hot reload on (edit %s or send SIGHUP; --no-reload disables)\n", policyPath)
 		}
 
 		var resolver proxy.CredentialResolver
@@ -112,8 +119,8 @@ var devCmd = &cobra.Command{
 			UpstreamTransport: upstreamTransportHook,
 			ApprovalTimeout:   devTimeout,
 			OnPersistRule: func(rule policy.Rule) {
-				if err := appendPolicyRule(devPolicy, rule); err != nil {
-					fmt.Fprintf(os.Stderr, "note: could not persist rule to %s: %v\n", devPolicy, err)
+				if err := appendPolicyRule(policyPath, rule); err != nil {
+					fmt.Fprintf(os.Stderr, "note: could not persist rule to %s: %v\n", policyPath, err)
 				}
 			},
 		}
@@ -143,7 +150,7 @@ var devCmd = &cobra.Command{
 			fmt.Fprintln(stdout, "🔐 HTTPS interception: off (HTTPS gated per host; 'nexus-cli ca init' enables per-request HTTPS policy)")
 		}
 
-		ctl, cerr := control.Start(broker, control.Info{Kind: "dev", Listen: addr, Policy: absPath(devPolicy)})
+		ctl, cerr := control.Start(broker, control.Info{Kind: "dev", Listen: addr, Policy: absPath(policyPath)})
 		if cerr != nil {
 			fmt.Fprintf(stderr, "⚠️  approvals from other terminals unavailable: %v\n", cerr)
 		} else {
@@ -189,5 +196,6 @@ func init() {
 	devCmd.Flags().BoolVar(&devSingle, "single-use", false, "Reject any reuse of a token (default: tokens are reusable until expiry unless minted --single-use)")
 	devCmd.Flags().DurationVar(&devTimeout, "approval-timeout", 60*time.Second, "How long a call waits for a human decision before it is denied")
 	devCmd.Flags().StringVar(&devMITM, "mitm", "auto", "HTTPS interception: auto (on if a CA exists, see 'nexus-cli ca init'), on (create the CA if needed), off")
+	devCmd.Flags().BoolVar(&devNoReload, "no-reload", false, "Disable policy hot reload (file polling and SIGHUP)")
 	devCmd.Flags().BoolVar(&devInject, "inject", false, "Inject broker-issued upstream credentials for rules marked inject: true")
 }

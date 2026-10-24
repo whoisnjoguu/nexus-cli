@@ -242,10 +242,16 @@ func DefaultPolicy() Policy {
 }
 
 // Policy returns the underlying ruleset.
-func (e *Engine) Policy() Policy { return e.policy }
+func (e *Engine) Policy() Policy {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.policy
+}
 
 // ProviderScopes returns the OAuth scopes configured for a provider, if any.
 func (e *Engine) ProviderScopes(provider string) []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	return e.policy.Providers[provider].Scopes
 }
 

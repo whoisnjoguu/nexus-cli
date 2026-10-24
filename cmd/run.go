@@ -44,6 +44,7 @@ var (
 	runKey      string
 	runPrintEnv bool
 	runUserID   string
+	runNoReload bool
 )
 
 // caBundleEnv are the variables pointed at the system+nexus CA bundle so common runtimes trust
@@ -96,10 +97,12 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--mitm must be auto, on or off (got %q)", runMITM)
 	}
 
-	pol, _, polExists, err := loadPolicyOrDefault(runPolicy)
+	rt, err := loadPolicyRuntime(runPolicy)
 	if err != nil {
 		return err
 	}
+	defer rt.Close()
+	pol, polExists := rt.Policy, rt.Exists
 
 	agent := runAgentID
 	if agent == "" {
@@ -157,7 +160,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		proxyAddr, shutdown, err = startRunProxy(pol, signer, mitmCA, stderr)
+		proxyAddr, shutdown, err = startRunProxy(rt, signer, mitmCA, stderr)
 		if err != nil {
 			return err
 		}
@@ -207,13 +210,18 @@ func runResolveActor(warn io.Writer) (actAs string, ceiling []string, connID, ga
 
 // startRunProxy serves an authenticated in-process proxy on 127.0.0.1:0 whose approvals go only to
 // the broker (exposed to `nexus-cli approve` via the control API).
-func startRunProxy(pol policy.Policy, signer *jwt.TokenSigner, mitmCA *ca.CA, stderr io.Writer) (string, func(), error) {
+func startRunProxy(rt *policyRuntime, signer *jwt.TokenSigner, mitmCA *ca.CA, stderr io.Writer) (string, func(), error) {
+	pol := rt.Policy
 	var auditlog *audit.Logger
 	if !runNoAudit {
 		var err error
-		if auditlog, _, err = openAuditLog(runPolicy); err != nil {
+		if auditlog, _, err = rt.openAudit(); err != nil {
 			return "", nil, err
 		}
+	}
+	if !runNoReload {
+		// SIGHUP is relayed to the child by runChild, so only file changes trigger a reload.
+		rt.watch(auditlog, stderr, true)
 	}
 	var resolver proxy.CredentialResolver
 	if runInject {
@@ -227,13 +235,13 @@ func startRunProxy(pol policy.Policy, signer *jwt.TokenSigner, mitmCA *ca.CA, st
 		return broker.Approve(ctx, req)
 	})
 
-	policyPath := runPolicy
+	policyPath := rt.Path
 	server := proxy.New(proxy.Config{
 		Listen:            "127.0.0.1:0",
 		Strict:            runStrict,
 		RequireAuth:       true,
 		Verifier:          signer.Verifier(),
-		Engine:            policy.NewEngine(pol),
+		Engine:            rt.Engine,
 		Audit:             auditlog,
 		Replay:            jwt.NewReplayGuard(),
 		Credentials:       resolver,
@@ -266,6 +274,7 @@ func startRunProxy(pol policy.Policy, signer *jwt.TokenSigner, mitmCA *ca.CA, st
 		fmt.Fprintf(stderr, "[nexus] warning: approvals unavailable (%v); calls needing approval will be denied\n", cerr)
 	}
 	shutdown := func() {
+		rt.Close()
 		cancel()
 		if err := <-served; err != nil {
 			fmt.Fprintf(stderr, "[nexus] proxy shutdown: %v\n", err)
@@ -462,6 +471,7 @@ func init() {
 	f.BoolVar(&runNoAudit, "no-audit", false, "Disable the tamper-evident audit log")
 	f.StringVar(&runKey, "key", "", "Path to the persistent Ed25519 key (default $NEXUS_HOME/ed25519.key or ~/.nexus/ed25519.key)")
 	f.BoolVar(&runPrintEnv, "print-env", false, "With --attach: print 'export' lines for eval instead of running a command")
+	f.BoolVar(&runNoReload, "no-reload", false, "Disable policy hot reload")
 	f.StringVarP(&runUserID, "user-id", "u", "", "Human principal fallback when not logged in")
 	rootCmd.AddCommand(runCmd)
 }

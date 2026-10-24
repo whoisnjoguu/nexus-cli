@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/whoisnjoguu/nexus-cli/internal/atomicfile"
 	"github.com/whoisnjoguu/nexus-cli/internal/tui"
 	"github.com/whoisnjoguu/nexus-cli/pkg/policy"
 	"github.com/whoisnjoguu/nexus-cli/pkg/principal"
@@ -60,17 +61,16 @@ var policyEditCmd = &cobra.Command{
 	},
 }
 
-// writeConfig serializes the policy + mcp upstreams back to the config file.
+// writeConfig serializes the whole config (policy, mcp: and audit: sections) back to the file.
 func writeConfig(path string, cfg configFile) error {
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 	header := "# Managed by `nexus-cli policy edit`. Hand edits are preserved on next open,\n# but inline comments are not.\n"
-	if err := os.WriteFile(path, append([]byte(header), data...), 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	return nil
+	// Atomic replace: a hot-reloading proxy never reads a half-written file. Keeps the file's
+	// mode (0600 for a new file).
+	return atomicfile.Write(path, append([]byte(header), data...), 0)
 }
 
 func init() {

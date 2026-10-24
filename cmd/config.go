@@ -149,6 +149,11 @@ func openAuditLog(policyPath string) (*audit.Logger, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
+	return openAuditConfig(cfg)
+}
+
+// openAuditConfig opens the audit log described by an already-loaded config.
+func openAuditConfig(cfg configFile) (*audit.Logger, string, error) {
 	path, err := cfg.Audit.ResolvedPath()
 	if err != nil {
 		return nil, "", err
