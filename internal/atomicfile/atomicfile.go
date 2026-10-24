@@ -45,7 +45,7 @@ func Write(path string, data []byte, mode os.FileMode) error {
 		_ = os.Remove(name)
 		return fmt.Errorf("write %s: %w", path, err)
 	}
-	if err := os.Rename(name, path); err != nil {
+	if err := rename(name, path); err != nil {
 		_ = os.Remove(name)
 		return fmt.Errorf("write %s: %w", path, err)
 	}
