@@ -169,6 +169,14 @@ func (e *Engine) GrantSession(req Request, dec Decision) {
 	s.granted[key] = s.granted[key] || dec.TaintEscalated
 }
 
+// SessionGranted reports whether a human already approved this shape of call for the session.
+func (e *Engine) SessionGranted(req Request) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_, ok := e.sessionLocked(req.SessionID).granted[GrantKey(req)]
+	return ok
+}
+
 // PersistedAllow builds the "always allow" rule for a match, inheriting the constraints of the
 // rule that produced the prompt so a prepended allow can't drop its scope, taints or one-time use.
 func PersistedAllow(m Match, matched *Rule) Rule {

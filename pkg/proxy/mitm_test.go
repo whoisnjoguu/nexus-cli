@@ -651,3 +651,27 @@ func TestSplitConnectHost(t *testing.T) {
 		}
 	}
 }
+
+func TestStrictEscalatesPolicyAllows(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+	signer, _ := jwt.NewTokenSigner()
+	ap := &recordingApprover{decision: hitl.Session}
+	engine := policy.NewEngine(policy.Policy{Tools: []policy.Rule{
+		{Match: policy.Match{Method: "GET", Path: "/**"}, Action: policy.ActionAllow},
+	}})
+	p := New(Config{RequireAuth: true, Verifier: signer.Verifier(), Engine: engine, Approver: ap, Strict: true})
+	tok, _ := signer.MintDualActorToken("agent", "alice", nil, time.Minute)
+	for i := 0; i < 2; i++ {
+		req, _ := http.NewRequest(http.MethodGet, upstream.URL+"/x", nil)
+		req.Header.Set("Proxy-Authorization", "Bearer "+tok)
+		rec := httptest.NewRecorder()
+		p.handleIntercept(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d = %d", i, rec.Code)
+		}
+	}
+	if ap.calls() != 1 || !strings.HasPrefix(ap.reqs[0].Reason, "strict mode") {
+		t.Fatalf("strict: approver calls = %d (%+v), want 1 (session approval sticks)", ap.calls(), ap.reqs)
+	}
+}

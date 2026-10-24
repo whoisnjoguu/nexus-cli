@@ -49,7 +49,9 @@ type Config struct {
 	Port int
 	// Listen is the host:port to bind. Empty derives 127.0.0.1:<Port> so the proxy is never
 	// exposed beyond the local machine by accident.
-	Listen      string
+	Listen string
+	// Strict requires a human decision for every call: with a policy engine, calls it would allow
+	// are escalated to HITL (session approvals still stick); without one, every call asks.
 	Strict      bool
 	RequireAuth bool
 	Verifier    *jwt.Verifier
@@ -383,7 +385,13 @@ func (p *ProxyServer) handleConnect(w http.ResponseWriter, r *http.Request, id i
 // decide resolves the action for a request: the policy engine when present, else method heuristics.
 func (p *ProxyServer) decide(req policy.Request) policy.Decision {
 	if p.cfg.Engine != nil {
-		return p.cfg.Engine.Evaluate(req)
+		dec := p.cfg.Engine.Evaluate(req)
+		// Strict mode puts a human in front of every call the policy would silently allow, unless
+		// they already approved this shape of call for the session.
+		if p.cfg.Strict && dec.Action == policy.ActionAllow && !p.cfg.Engine.SessionGranted(req) {
+			return policy.Decision{Action: policy.ActionHITL, Rule: dec.Rule, Reason: "strict mode: " + dec.Reason}
+		}
+		return dec
 	}
 	// Legacy fallback: writes/deletes (and everything in strict mode) require approval.
 	isWrite := req.Method == http.MethodPost || req.Method == http.MethodPut ||
