@@ -51,6 +51,7 @@ type Server struct {
 	srv    *http.Server
 	path   string
 	host   string
+	ui     *uiAuth
 
 	closeOnce sync.Once
 	closeErr  error
@@ -94,6 +95,7 @@ func Start(b *hitl.Broker, info Info) (*Server, error) {
 		broker:    b,
 		ln:        ln,
 		host:      info.Addr,
+		ui:        newUIAuth(),
 		serveDone: make(chan struct{}),
 		closing:   make(chan struct{}),
 	}
@@ -191,15 +193,21 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	mux.HandleFunc("GET /v1/approvals", s.handleList)
 	mux.HandleFunc("POST /v1/approvals/{id}", s.handleDecide)
+	s.registerUI(mux)
 	return s.guard(mux)
 }
 
-// guard enforces the loopback-only, token-authenticated, non-browser access model.
+// guard enforces the loopback-only access model: CLI clients use the bearer token and must not be
+// browsers; requests without an Authorization header go through the web UI's cookie + CSRF checks
+// (see guardBrowser).
 func (s *Server) guard(next http.Handler) http.Handler {
 	want := []byte("Bearer " + s.info.Token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
+		setSecurityHeaders(w)
+		if _, ok := r.Header["Authorization"]; !ok {
+			s.guardBrowser(next, w, r)
+			return
+		}
 		if r.Host != s.host { // DNS rebinding
 			writeError(w, http.StatusForbidden, "invalid host")
 			return
@@ -213,7 +221,7 @@ func (s *Server) guard(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(withAuth(r.Context(), authInfo{kind: authBearer})))
 	})
 }
 
@@ -297,7 +305,7 @@ func (s *Server) handleDecide(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := s.broker.Decide(r.PathValue("id"), d); err != nil {
+	if err := s.broker.DecideBy(r.PathValue("id"), d, decidedBy(r.Context())); err != nil {
 		writeError(w, http.StatusNotFound, "unknown or already decided approval request")
 		return
 	}
