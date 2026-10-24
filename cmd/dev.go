@@ -6,11 +6,14 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/whoisnjoguu/nexus-cli/pkg/audit"
+	"github.com/whoisnjoguu/nexus-cli/pkg/control"
 	"github.com/whoisnjoguu/nexus-cli/pkg/credential"
+	"github.com/whoisnjoguu/nexus-cli/pkg/hitl"
 	"github.com/whoisnjoguu/nexus-cli/pkg/jwt"
 	"github.com/whoisnjoguu/nexus-cli/pkg/policy"
 	"github.com/whoisnjoguu/nexus-cli/pkg/proxy"
@@ -26,6 +29,8 @@ var (
 	devInject   bool
 	devListen   string
 	devSingle   bool
+	devTimeout  time.Duration
+	devMITM     string
 )
 
 var devCmd = &cobra.Command{
@@ -47,15 +52,24 @@ var devCmd = &cobra.Command{
 			replay = jwt.NewReplayGuard()
 		}
 
-		var engine *policy.Engine
-		if cfg, exists, err := loadConfig(devPolicy); err != nil {
+		stdout, stderr := cmd.OutOrStdout(), cmd.ErrOrStderr()
+		if devTimeout <= 0 {
+			return fmt.Errorf("--approval-timeout must be positive (got %s)", devTimeout)
+		}
+		mitmCA, err := resolveMITM(devMITM)
+		if err != nil {
 			return err
-		} else if exists {
-			engine = policy.NewEngine(cfg.Policy)
-			fmt.Printf("📜 policy loaded from %s (agent: %s)\n", devPolicy, cfg.Agent)
+		}
+
+		pol, agent, exists, err := loadPolicyOrDefault(devPolicy)
+		if err != nil {
+			return err
+		}
+		engine := policy.NewEngine(pol)
+		if exists {
+			fmt.Fprintf(stdout, "📜 policy loaded from %s (agent: %s)\n", devPolicy, agent)
 		} else {
-			engine = policy.NewEngine(policy.DefaultPolicy())
-			fmt.Printf("📜 no %s found — using the safe-tier default policy (reads allowed, writes ask, shell denied)\n", devPolicy)
+			fmt.Fprintf(stdout, "📜 no %s found — using the safe-tier default policy (reads allowed, writes ask, shell denied)\n", devPolicy)
 		}
 
 		var auditlog *audit.Logger
@@ -68,14 +82,19 @@ var devCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			fmt.Printf("📓 audit log: %s\n", apath)
+			fmt.Fprintf(stdout, "📓 audit log: %s\n", apath)
 		}
 
 		var resolver proxy.CredentialResolver
 		if devInject {
 			resolver = credential.NewResolver()
-			fmt.Println("🔑 secretless credential injection enabled (broker-backed)")
+			fmt.Fprintln(stdout, "🔑 secretless credential injection enabled (broker-backed)")
 		}
+
+		// Approvals: the local terminal (when interactive) races `nexus-cli approve` via the broker.
+		broker := hitl.NewBroker(devTimeout)
+		tty, hasTTY := hitl.NewTTYApprover(hitl.TTYOptions{Timeout: devTimeout})
+		approver := hitl.Any(tty, broker)
 
 		cfg := proxy.Config{
 			Port:        proxyPort,
@@ -88,6 +107,12 @@ var devCmd = &cobra.Command{
 			Audit:       auditlog,
 			Replay:      replay,
 			Credentials: resolver,
+			Approver:    approver,
+			MITM:        mitmCA,
+			Passthrough: pol.Egress.Passthrough,
+			// Tests only: nil in production, which selects the proxy's default transport.
+			UpstreamTransport: upstreamTransportHook,
+			ApprovalTimeout:   devTimeout,
 			OnPersistRule: func(rule policy.Rule) {
 				if err := appendPolicyRule(devPolicy, rule); err != nil {
 					fmt.Fprintf(os.Stderr, "note: could not persist rule to %s: %v\n", devPolicy, err)
@@ -101,7 +126,6 @@ var devCmd = &cobra.Command{
 			return fmt.Errorf("listen on %s: %w", cfg.ListenAddr(), err)
 		}
 		addr := ln.Addr().String()
-		stdout, stderr := cmd.OutOrStdout(), cmd.ErrOrStderr()
 		if !isLoopbackAddr(addr) {
 			fmt.Fprintf(stderr, "⚠️  WARNING: proxy is listening on non-loopback address %s — it is reachable from other machines.\n", addr)
 			if !requireAuth {
@@ -115,6 +139,23 @@ var devCmd = &cobra.Command{
 		fmt.Fprintf(stdout, "🔒 Nexus Security Proxy listening on %s (Strict: %t, RequireAuth: %t, Tokens: %s)\n",
 			addr, strictMode, requireAuth, tokenMode)
 		fmt.Fprintf(stdout, "   health: http://%s/_nexus/health · agents: HTTP_PROXY=http://agent:<token>@%s\n", addr, addr)
+		if mitmCA != nil {
+			fmt.Fprintf(stdout, "🔐 HTTPS interception: on (CA: %s, %d passthrough host pattern(s))\n", mitmCA.CertPath(), len(pol.Egress.Passthrough))
+		} else {
+			fmt.Fprintln(stdout, "🔐 HTTPS interception: off (HTTPS gated per host; 'nexus-cli ca init' enables per-request HTTPS policy)")
+		}
+
+		ctl, cerr := control.Start(broker, control.Info{Kind: "dev", Listen: addr, Policy: absPath(devPolicy)})
+		if cerr != nil {
+			fmt.Fprintf(stderr, "⚠️  approvals from other terminals unavailable: %v\n", cerr)
+		} else {
+			defer ctl.Close()
+		}
+		if hasTTY {
+			fmt.Fprintln(stdout, "approvals: answer here or run 'nexus-cli approve' in another terminal")
+		} else {
+			fmt.Fprintln(stdout, "approvals: run 'nexus-cli approve' in another terminal (no interactive terminal here)")
+		}
 
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
@@ -148,5 +189,7 @@ func init() {
 	devCmd.Flags().BoolVar(&devNoAudit, "no-audit", false, "Disable the tamper-evident audit log")
 	devCmd.Flags().StringVar(&devListen, "listen", "", "Address to bind as host:port (default 127.0.0.1:<port>; non-loopback exposes the proxy to the network)")
 	devCmd.Flags().BoolVar(&devSingle, "single-use", false, "Reject any reuse of a token (default: tokens are reusable until expiry unless minted --single-use)")
+	devCmd.Flags().DurationVar(&devTimeout, "approval-timeout", 60*time.Second, "How long a call waits for a human decision before it is denied")
+	devCmd.Flags().StringVar(&devMITM, "mitm", "auto", "HTTPS interception: auto (on if a CA exists, see 'nexus-cli ca init'), on (create the CA if needed), off")
 	devCmd.Flags().BoolVar(&devInject, "inject", false, "Inject broker-issued upstream credentials for rules marked inject: true")
 }

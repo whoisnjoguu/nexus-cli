@@ -1,6 +1,8 @@
 package policy
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -298,5 +300,40 @@ func TestDefaultPolicyTiers(t *testing.T) {
 		if d := e.Evaluate(c.req); d.Action != c.want {
 			t.Errorf("%+v: want %s, got %s", c.req, c.want, d.Action)
 		}
+	}
+}
+
+func TestHostMatches(t *testing.T) {
+	pats := []string{"api.github.com", "*.pinned.example"}
+	cases := map[string]bool{
+		"api.github.com":         true,
+		"API.GitHub.com:443":     true,
+		"github.com":             false,
+		"a.pinned.example":       true,
+		"x.y.pinned.example:443": true,
+		"pinned.example":         false,
+		"evil.com":               false,
+	}
+	for host, want := range cases {
+		if got := HostMatches(pats, host); got != want {
+			t.Errorf("HostMatches(%q) = %v, want %v", host, got, want)
+		}
+	}
+	if HostMatches(nil, "api.github.com") {
+		t.Error("empty pattern list must not match")
+	}
+}
+
+func TestLoadParsesPassthrough(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nexus.yaml")
+	if err := os.WriteFile(path, []byte("egress:\n  allow: [api.github.com]\n  passthrough: [\"*.pinned.example\", bank.example]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Egress.Passthrough) != 2 || p.Egress.Passthrough[0] != "*.pinned.example" || p.Egress.Passthrough[1] != "bank.example" {
+		t.Fatalf("passthrough = %v", p.Egress.Passthrough)
 	}
 }
