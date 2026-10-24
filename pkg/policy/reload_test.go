@@ -225,3 +225,32 @@ func TestSetPolicySemantics(t *testing.T) {
 		t.Fatalf("new one_time rule = %s", d.Action)
 	}
 }
+
+func TestWatcherAbsentAtStartIsSilentThenLoads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nexus.yaml")
+	e := NewEngine(Policy{})
+	al, errb := &memAudit{}, &syncBuf{}
+	w := NewWatcher(WatcherConfig{Path: path, Engine: e, Load: strictLoad, Interval: 10 * time.Millisecond, Audit: al, Stderr: errb})
+	t.Cleanup(w.Close)
+	w.Start()
+	time.Sleep(60 * time.Millisecond)
+	if n := len(al.all()); n != 0 || errb.String() != "" {
+		t.Fatalf("absent-at-start file reported: %d entries, stderr %q", n, errb.String())
+	}
+	if toolAction(e, "x") == ActionAllow {
+		t.Fatal("empty policy allowed x")
+	}
+	if err := os.WriteFile(path, []byte(polAllowX), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "load after create", func() bool { return toolAction(e, "x") == ActionAllow })
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "missing report", func() bool {
+		return strings.Contains(errb.String(), "is missing or unreadable (keeping the current policy)")
+	})
+	if strings.Contains(errb.String(), "keeping the current policy; keeping") {
+		t.Fatalf("duplicated suffix: %q", errb.String())
+	}
+}

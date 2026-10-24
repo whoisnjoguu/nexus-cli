@@ -113,6 +113,9 @@ func NewWatcher(cfg WatcherConfig) *Watcher {
 	}
 	w := &Watcher{cfg: cfg, lastSum: cfg.InitialSum, stop: make(chan struct{}), done: make(chan struct{})}
 	w.stamp = stampOf(cfg.Path)
+	// A file absent at startup means the built-in default policy is in use: that's not a failed
+	// reload, so only report once the file appears and then goes away again.
+	w.missing = !w.stamp.ok
 	for _, d := range cfg.Deps {
 		w.deps = append(w.deps, stampOf(d))
 	}
@@ -190,7 +193,7 @@ func (w *Watcher) check(force bool) error {
 	if !st.ok {
 		if !w.missing || force {
 			w.missing = true
-			err := fmt.Errorf("%s is missing or unreadable; keeping the current policy", w.cfg.Path)
+			err := fmt.Errorf("%s is missing or unreadable", w.cfg.Path)
 			w.report(false, "", err)
 			return err
 		}
