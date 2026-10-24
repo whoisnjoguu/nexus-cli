@@ -27,6 +27,8 @@ type Broker struct {
 	byID    map[string]*brokerEntry
 	changed chan struct{}
 	version uint64
+	subs    map[*subscriber]struct{}
+	recent  []Event // newest last, at most RecentLimit
 }
 
 type brokerEntry struct {
@@ -43,6 +45,7 @@ func NewBroker(timeout time.Duration) *Broker {
 		timeout: timeout,
 		byID:    make(map[string]*brokerEntry),
 		changed: make(chan struct{}),
+		subs:    make(map[*subscriber]struct{}),
 	}
 }
 
@@ -86,19 +89,22 @@ func (b *Broker) Approve(ctx context.Context, req Request) Decision {
 	b.byID[req.ID] = e
 	b.pending = append(b.pending, e)
 	b.notifyLocked()
+	b.emitLocked(Event{Type: EventAdded, Request: req})
 	b.mu.Unlock()
 
 	timer := time.NewTimer(b.timeout)
 	defer timer.Stop()
 
+	ev := Event{Type: EventCancelled, Decision: Deny.String()}
 	select {
 	case d := <-e.ch:
 		return d
 	case <-ctx.Done():
 	case <-timer.C:
+		ev = Event{Type: EventExpired, Decision: Deny.String(), By: "timeout"}
 	}
 
-	if b.remove(req.ID, e) {
+	if b.remove(req.ID, e, ev) {
 		return Deny
 	}
 	// Decide won the race and already removed the entry; it reported success to the human, so
@@ -106,10 +112,15 @@ func (b *Broker) Approve(ctx context.Context, req Request) Decision {
 	return <-e.ch
 }
 
-// remove drops e from the queue; it reports false if e was no longer pending.
-func (b *Broker) remove(id string, e *brokerEntry) bool {
+// remove drops e from the queue and publishes ev for it; it reports false if e was no longer
+// pending.
+func (b *Broker) remove(id string, e *brokerEntry, ev Event) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	return b.removeLocked(id, e, ev)
+}
+
+func (b *Broker) removeLocked(id string, e *brokerEntry, ev Event) bool {
 	if cur, ok := b.byID[id]; !ok || cur != e {
 		return false
 	}
@@ -121,18 +132,24 @@ func (b *Broker) remove(id string, e *brokerEntry) bool {
 		}
 	}
 	b.notifyLocked()
+	ev.Request = e.req
+	b.emitLocked(ev)
 	return true
 }
 
 // Decide resolves a pending request. It returns ErrUnknownRequest if id is not pending.
-func (b *Broker) Decide(id string, d Decision) error {
+func (b *Broker) Decide(id string, d Decision) error { return b.DecideBy(id, d, "") }
+
+// DecideBy is Decide with a label for who or what decided (for example "cli" or "web"); the label
+// is reported in decided events and Recent.
+func (b *Broker) DecideBy(id string, d Decision, by string) error {
 	b.mu.Lock()
+	defer b.mu.Unlock()
 	e, ok := b.byID[id]
-	b.mu.Unlock()
-	if !ok || !b.remove(id, e) {
+	if !ok || !b.removeLocked(id, e, Event{Type: EventDecided, Decision: d.String(), By: by}) {
 		return ErrUnknownRequest
 	}
-	e.ch <- d
+	e.ch <- d // buffered(1) and sent at most once: never blocks
 	return nil
 }
 
