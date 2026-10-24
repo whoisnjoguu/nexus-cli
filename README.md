@@ -363,6 +363,24 @@ TOKEN=$(nexus-cli identity mint -a agent-x -s db:read -q)
 curl -x "http://nexus:$TOKEN@127.0.0.1:8075" http://api.internal.company.com/v1/claims/1
 ```
 
+### Run as a service
+
+Keep the proxy running in the background (and across logins) as a per-user service: a systemd
+**user** unit on Linux, a launchd agent on macOS, or a logon Scheduled Task on Windows. No root
+needed.
+
+```bash
+nexus-cli service install --policy ./nexus.yaml   # --dry-run prints the unit/plist/command only
+nexus-cli service status                          # platform state + /_nexus/health + control entry
+nexus-cli service logs -f                         # journalctl / launchd log / service.log
+nexus-cli run --attach 127.0.0.1:8075 -- <cmd>    # gate commands through the service's proxy
+nexus-cli approve                                 # answer approval prompts (no TTY under a service)
+```
+
+The service runs `dev` with an absolute policy path and the same `NEXUS_HOME`, so `run --attach`,
+`approve` and `doctor` find it — **`NEXUS_HOME` must match** in your shell. See
+[docs/service.md](docs/service.md) for flags, hardening, linger and Windows limitations.
+
 ### HTTPS interception
 
 Without a CA, HTTPS is tunnelled via `CONNECT` and gated on the **host** only. Create a local CA and
@@ -570,37 +588,42 @@ eval "$(nexus-cli run --attach 127.0.0.1:8075 --print-env)"   # sets HTTP(S)_PRO
 
 ## Commands
 
-| Command                    | Description                                            |
-| -------------------------- | ------------------------------------------------------ |
-| `nexus-cli init`           | Scaffold `nexus.yaml` + MCP host configs               |
-| `nexus-cli login`          | Authenticate the human principal via the Gateway       |
-| `nexus-cli connect`        | Connect an additional provider to your session         |
-| `nexus-cli connections`    | List provider connections + live status                |
-| `nexus-cli providers`      | List providers available on the Gateway                |
-| `nexus-cli whoami`         | Show the logged-in principal                           |
-| `nexus-cli logout`         | Clear the cached session                               |
-| `nexus-cli identity mint`  | Mint a short-lived dual-actor JWT for an agent session |
-| `nexus-cli run -- <cmd>`   | Run a command behind the gate (proxy + token + CA env) |
-| `nexus-cli dev`            | Start the local zero-trust proxy with policy + HITL    |
-| `nexus-cli approve`        | Answer pending approval prompts from another terminal  |
-| `nexus-cli ca init`        | Create the local CA for HTTPS interception             |
-| `nexus-cli ca path`        | Print the CA path (`--bundle`: write the CA bundle)    |
-| `nexus-cli ca fingerprint` | Print the CA certificate's SHA-256 fingerprint         |
-| `nexus-cli ca install`     | Trust the CA in the OS store (`uninstall` to remove)   |
-| `nexus-cli mcp serve`      | Serve / aggregate MCP tool servers behind the policy   |
-| `nexus-cli mcp status`     | Show running MCP gateways and upstream health          |
-| `nexus-cli policy edit`    | Interactive TUI policy editor (writes `nexus.yaml`)    |
-| `nexus-cli policy test`    | Dry-run a tool call against the policy                 |
-| `nexus-cli audit tail`     | Show recent decisions (`-f` to follow, filters)        |
-| `nexus-cli audit verify`   | Verify the audit hash chain, signatures and anchor     |
-| `nexus-cli audit head`     | Print the chain head to store as an off-machine anchor |
-| `nexus-cli audit export`   | Export decisions as JSONL or CSV                       |
-| `nexus-cli audit keygen`   | Create the audit signing key pair                      |
-| `nexus-cli keys jwks`      | Print the public verification keys as a JWKS           |
-| `nexus-cli keys show`      | Show signing key id, backend and location              |
-| `nexus-cli keys rotate`    | Rotate the signing key (`migrate`, `prune` also exist) |
-| `nexus-cli doctor`         | Diagnose the local setup                               |
-| `nexus-cli version`        | Print the version, commit, and platform                |
+| Command                                  | Description                                              |
+| ---------------------------------------- | -------------------------------------------------------- |
+| `nexus-cli init`                         | Scaffold `nexus.yaml` + MCP host configs                 |
+| `nexus-cli login`                        | Authenticate the human principal via the Gateway         |
+| `nexus-cli connect`                      | Connect an additional provider to your session           |
+| `nexus-cli connections`                  | List provider connections + live status                  |
+| `nexus-cli providers`                    | List providers available on the Gateway                  |
+| `nexus-cli whoami`                       | Show the logged-in principal                             |
+| `nexus-cli logout`                       | Clear the cached session                                 |
+| `nexus-cli identity mint`                | Mint a short-lived dual-actor JWT for an agent session   |
+| `nexus-cli run -- <cmd>`                 | Run a command behind the gate (proxy + token + CA env)   |
+| `nexus-cli dev`                          | Start the local zero-trust proxy with policy + HITL      |
+| `nexus-cli approve`                      | Answer pending approval prompts from another terminal    |
+| `nexus-cli service install`              | Run `dev` as a per-user background service (`--dry-run`) |
+| `nexus-cli service uninstall`            | Stop, disable and remove the service                     |
+| `nexus-cli service start\|stop\|restart` | Control the installed service                            |
+| `nexus-cli service status`               | Service state, health and control entry (`--json`)       |
+| `nexus-cli service logs`                 | Show service logs (`-f` to follow, `-n` lines)           |
+| `nexus-cli ca init`                      | Create the local CA for HTTPS interception               |
+| `nexus-cli ca path`                      | Print the CA path (`--bundle`: write the CA bundle)      |
+| `nexus-cli ca fingerprint`               | Print the CA certificate's SHA-256 fingerprint           |
+| `nexus-cli ca install`                   | Trust the CA in the OS store (`uninstall` to remove)     |
+| `nexus-cli mcp serve`                    | Serve / aggregate MCP tool servers behind the policy     |
+| `nexus-cli mcp status`                   | Show running MCP gateways and upstream health            |
+| `nexus-cli policy edit`                  | Interactive TUI policy editor (writes `nexus.yaml`)      |
+| `nexus-cli policy test`                  | Dry-run a tool call against the policy                   |
+| `nexus-cli audit tail`                   | Show recent decisions (`-f` to follow, filters)          |
+| `nexus-cli audit verify`                 | Verify the audit hash chain, signatures and anchor       |
+| `nexus-cli audit head`                   | Print the chain head to store as an off-machine anchor   |
+| `nexus-cli audit export`                 | Export decisions as JSONL or CSV                         |
+| `nexus-cli audit keygen`                 | Create the audit signing key pair                        |
+| `nexus-cli keys jwks`                    | Print the public verification keys as a JWKS             |
+| `nexus-cli keys show`                    | Show signing key id, backend and location                |
+| `nexus-cli keys rotate`                  | Rotate the signing key (`migrate`, `prune` also exist)   |
+| `nexus-cli doctor`                       | Diagnose the local setup                                 |
+| `nexus-cli version`                      | Print the version, commit, and platform                  |
 
 ## Project Layout
 
@@ -622,6 +645,7 @@ nexus-cli/
 │   ├── policy/          # declarative least-privilege policy engine
 │   ├── principal/       # human identity + multi-provider connections via the Gateway
 │   ├── proxy/           # forward proxy, auth, CONNECT tunnelling + TLS interception
+│   ├── service/         # per-user service managers (systemd, launchd, Task Scheduler)
 │   └── sdk/             # embeddable Go gate + gating http.RoundTripper
 ├── sdk/python/          # Python SDK
 ├── Dockerfile           # distroless sidecar image
