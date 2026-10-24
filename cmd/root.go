@@ -10,6 +10,12 @@ var rootCmd = &cobra.Command{
 	Short: "Nexus Security CLI - Zero-Trust Developer Proxy for Autonomous Agents",
 	Long: `nexus-cli mitigates Tool Chain Exposure and Identity Fluidity by offering
 ephemeral dual-actor token minting and interactive Human-in-the-Loop proxy controls.`,
+	// main prints the error once; cobra would otherwise print it a second time.
+	SilenceErrors: true,
+	// Args and flags are valid by now, so a runtime failure shouldn't dump usage text.
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		cmd.SilenceUsage = true
+	},
 }
 
 func Execute() error {

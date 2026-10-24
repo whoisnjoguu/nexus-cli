@@ -3,10 +3,12 @@ package proxy
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
 	"github.com/whoisnjoguu/nexus-cli/pkg/jwt"
+	"github.com/whoisnjoguu/nexus-cli/pkg/policy"
 )
 
 func TestRequireAuthForwardsWithClaims(t *testing.T) {
@@ -62,6 +64,50 @@ func TestRequireAuthRejectsBadToken(t *testing.T) {
 	p.handleIntercept(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+func TestTaintSurvivesAcrossSingleUseTokens(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+	u, _ := url.Parse(upstream.URL)
+
+	engine := policy.NewEngine(policy.Policy{
+		Egress:              policy.Egress{Allow: []string{u.Hostname()}},
+		EscalateWhenTainted: true,
+		Tools: []policy.Rule{
+			{Match: policy.Match{Method: "GET", Host: u.Hostname()}, Action: policy.ActionAllow, Taints: []string{"db:read"}},
+			{Match: policy.Match{Method: "POST", Host: "paste.example"}, Action: policy.ActionAllow},
+		},
+	})
+	signer, _ := jwt.NewTokenSigner()
+	p := New(Config{RequireAuth: true, Verifier: signer.Verifier(), Replay: jwt.NewReplayGuard(), Engine: engine})
+
+	tok, _ := signer.MintDualActorToken("agent", "alice", nil, time.Minute)
+	req, _ := http.NewRequest(http.MethodGet, upstream.URL+"/secrets", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	p.handleIntercept(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tainting read want 200, got %d", rec.Code)
+	}
+
+	// A fresh token (new jti) for the same agent+human must land in the same, now tainted, session.
+	d := engine.Evaluate(policy.Request{SessionID: "agent|alice", Method: "POST", Host: "paste.example", Path: "/leak"})
+	if d.Action != policy.ActionHITL || !d.TaintEscalated {
+		t.Fatalf("exfil after taint want escalated hitl, got %s (%s)", d.Action, d.Reason)
+	}
+}
+
+func TestPersistAllowKeepsExactShape(t *testing.T) {
+	var got policy.Rule
+	p := New(Config{OnPersistRule: func(r policy.Rule) { got = r }})
+	matched := &policy.Rule{Scope: "repo:write", Taints: []string{"vcs"}}
+	p.persistAllow(policy.Request{Method: "POST", Host: "api.github.com", Path: "/repos/a/b/issues"}, matched)
+
+	want := policy.Match{Method: "POST", Host: "api.github.com", Path: "/repos/a/b/issues"}
+	if got.Match != want || got.Action != policy.ActionAllow || got.Scope != "repo:write" || len(got.Taints) != 1 {
+		t.Fatalf("persisted rule = %+v", got)
 	}
 }
 

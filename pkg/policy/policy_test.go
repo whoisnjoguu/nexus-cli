@@ -1,6 +1,9 @@
 package policy
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func testEngine() *Engine {
 	return NewEngine(Policy{
@@ -156,10 +159,11 @@ func TestSessionGrant(t *testing.T) {
 		Tools:         []Rule{{Match: Match{Method: "POST", Path: "/**"}, Action: ActionHITL}},
 	})
 	req := Request{SessionID: "s", Method: "POST", Host: "api.internal", Path: "/x"}
-	if d := e.Evaluate(req); d.Action != ActionHITL {
+	d := e.Evaluate(req)
+	if d.Action != ActionHITL {
 		t.Fatalf("first call want hitl, got %s", d.Action)
 	}
-	e.GrantSession(req)
+	e.GrantSession(req, d)
 	if d := e.Evaluate(req); d.Action != ActionAllow {
 		t.Fatalf("after grant want allow, got %s", d.Action)
 	}
@@ -174,6 +178,107 @@ func TestSessionGrant(t *testing.T) {
 	// Different session -> not covered.
 	if d := e.Evaluate(Request{SessionID: "other", Method: "POST", Host: "api.internal", Path: "/x"}); d.Action == ActionAllow {
 		t.Fatal("grant must not leak across sessions")
+	}
+}
+
+func TestSessionGrantDoesNotOverrideDeny(t *testing.T) {
+	e := NewEngine(Policy{
+		Tools: []Rule{
+			{Match: Match{Method: "POST", Path: "/admin/**"}, Action: ActionDeny},
+			{Match: Match{Method: "POST", Path: "/billing/**"}, Scope: "billing:write", Action: ActionHITL},
+			{Match: Match{Method: "POST", Path: "/**"}, Action: ActionHITL},
+		},
+	})
+	req := Request{SessionID: "s", Method: "POST", Host: "api.internal", Path: "/x"}
+	e.GrantSession(req, e.Evaluate(req))
+
+	if d := e.Evaluate(Request{SessionID: "s", Method: "POST", Host: "api.internal", Path: "/admin/users"}); d.Action != ActionDeny {
+		t.Fatalf("grant must not override a deny rule, got %s (%s)", d.Action, d.Reason)
+	}
+	if d := e.Evaluate(Request{SessionID: "s", Method: "POST", Host: "api.internal", Path: "/billing/pay"}); d.Action != ActionDeny {
+		t.Fatalf("grant must not override a scope requirement, got %s (%s)", d.Action, d.Reason)
+	}
+}
+
+func TestSessionGrantDoesNotOverrideOneTime(t *testing.T) {
+	e := testEngine()
+	req := Request{SessionID: "s", Method: "POST", Host: "api.internal.company.com", Path: "/v1/payouts/execute", Scopes: []string{"payout:write"}}
+	e.GrantSession(req, e.Evaluate(req))
+	if d := e.Evaluate(req); d.Action != ActionDeny {
+		t.Fatalf("one-time rule must stay consumed despite grant, got %s (%s)", d.Action, d.Reason)
+	}
+}
+
+func TestGrantAtTaintPromptCoversTaint(t *testing.T) {
+	e := NewEngine(Policy{
+		Egress:              Egress{Allow: []string{"api.internal"}},
+		EscalateWhenTainted: true,
+		Tools: []Rule{
+			{Match: Match{Method: "GET", Host: "api.internal"}, Action: ActionAllow, Taints: []string{"db:read"}},
+			{Match: Match{Method: "PUT", Host: "paste.example"}, Action: ActionAllow},
+		},
+	})
+	e.Evaluate(Request{SessionID: "s", Method: "GET", Host: "api.internal", Path: "/secrets"})
+
+	put := Request{SessionID: "s", Method: "PUT", Host: "paste.example", Path: "/"}
+	d := e.Evaluate(put)
+	if d.Action != ActionHITL || !d.TaintEscalated {
+		t.Fatalf("tainted egress want escalated hitl, got %s (%s)", d.Action, d.Reason)
+	}
+	e.GrantSession(put, d)
+	if d := e.Evaluate(put); d.Action != ActionAllow {
+		t.Fatalf("grant made at a taint prompt should cover it, got %s (%s)", d.Action, d.Reason)
+	}
+}
+
+func TestCleanGrantForSameShapeStillEscalates(t *testing.T) {
+	e := NewEngine(Policy{
+		Egress:              Egress{Allow: []string{"api.internal"}},
+		EscalateWhenTainted: true,
+		Tools: []Rule{
+			{Match: Match{Method: "GET", Host: "api.internal"}, Action: ActionAllow, Taints: []string{"db:read"}},
+			{Match: Match{Method: "POST", Host: "paste.example", Path: "/draft"}, Action: ActionHITL},
+			{Match: Match{Method: "POST", Host: "paste.example"}, Action: ActionAllow},
+		},
+	})
+	draft := Request{SessionID: "s", Method: "POST", Host: "paste.example", Path: "/draft"}
+	e.GrantSession(draft, e.Evaluate(draft))
+
+	e.Evaluate(Request{SessionID: "s", Method: "GET", Host: "api.internal", Path: "/secrets"})
+	if d := e.Evaluate(Request{SessionID: "s", Method: "POST", Host: "paste.example", Path: "/leak"}); d.Action != ActionHITL {
+		t.Fatalf("pre-taint grant must not bypass taint escalation, got %s (%s)", d.Action, d.Reason)
+	}
+}
+
+func TestIdleSessionsEvicted(t *testing.T) {
+	e := testEngine()
+	now := time.Unix(1_000_000, 0)
+	e.now = func() time.Time { return now }
+
+	e.Evaluate(Request{SessionID: "old", Method: "GET", Host: "api.internal.company.com", Path: "/v1/claims/1", Scopes: []string{"claims:read"}})
+	now = now.Add(SessionIdleTTL + 2*time.Minute)
+	e.Evaluate(Request{SessionID: "new", Tool: "execute_shell"})
+
+	if _, ok := e.sessions["old"]; ok {
+		t.Fatal("idle session should have been evicted")
+	}
+	if _, ok := e.sessions["new"]; !ok {
+		t.Fatal("active session should be retained")
+	}
+}
+
+func TestPersistedAllowInheritsConstraints(t *testing.T) {
+	matched := &Rule{Scope: "repo:write", Taints: []string{"vcs"}, OneTime: true, Action: ActionHITL}
+	r := PersistedAllow(Match{Method: "POST", Host: "api.github.com", Path: "/repos/x"}, matched)
+	if r.Action != ActionAllow || r.Scope != "repo:write" || !r.OneTime || len(r.Taints) != 1 || r.Taints[0] != "vcs" {
+		t.Fatalf("persisted rule lost constraints: %+v", r)
+	}
+	if r.Match.Path != "/repos/x" {
+		t.Fatalf("persisted rule must keep the exact path, got %q", r.Match.Path)
+	}
+	matched.Taints[0] = "mutated"
+	if r.Taints[0] != "vcs" {
+		t.Fatal("persisted rule must not alias the matched rule's taints")
 	}
 }
 

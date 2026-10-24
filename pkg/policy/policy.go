@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -82,19 +83,32 @@ type Decision struct {
 	Action Action
 	Rule   *Rule
 	Reason string
+	// TaintEscalated is set when taint tracking raised an otherwise-allowed call to HITL.
+	TaintEscalated bool
 }
 
 // Allowed reports whether the decision permits execution without further interaction.
 func (d Decision) Allowed() bool { return d.Action == ActionAllow }
 
+// SessionIdleTTL is how long an idle session keeps its taint, one-time and grant state.
+const SessionIdleTTL = 12 * time.Hour
+
+// sessionState is the mutable per-session evaluation state.
+type sessionState struct {
+	tainted  map[string]bool // taint label -> seen
+	consumed map[string]bool // ruleFingerprint -> used (one_time)
+	granted  map[string]bool // grantKey -> grant also covers taint escalation
+	lastSeen time.Time
+}
+
 // Engine evaluates requests against a policy while tracking per-session taint and one-time use.
 type Engine struct {
 	policy Policy
 
-	mu       sync.Mutex
-	tainted  map[string]map[string]bool // sessionID -> taint label -> seen
-	consumed map[string]bool            // sessionID|ruleFingerprint -> used (one_time)
-	granted  map[string]bool            // sessionID|grantKey -> approved for the session
+	mu        sync.Mutex
+	sessions  map[string]*sessionState
+	lastSweep time.Time
+	now       func() time.Time
 }
 
 // NewEngine builds an evaluator around a policy, applying sane defaults.
@@ -104,10 +118,33 @@ func NewEngine(p Policy) *Engine {
 	}
 	return &Engine{
 		policy:   p,
-		tainted:  make(map[string]map[string]bool),
-		consumed: make(map[string]bool),
-		granted:  make(map[string]bool),
+		sessions: make(map[string]*sessionState),
+		now:      time.Now,
 	}
+}
+
+// sessionLocked returns the state for a session, evicting idle sessions at most once a minute.
+func (e *Engine) sessionLocked(id string) *sessionState {
+	now := e.now()
+	if now.Sub(e.lastSweep) > time.Minute {
+		for k, s := range e.sessions {
+			if now.Sub(s.lastSeen) > SessionIdleTTL {
+				delete(e.sessions, k)
+			}
+		}
+		e.lastSweep = now
+	}
+	s, ok := e.sessions[id]
+	if !ok {
+		s = &sessionState{
+			tainted:  make(map[string]bool),
+			consumed: make(map[string]bool),
+			granted:  make(map[string]bool),
+		}
+		e.sessions[id] = s
+	}
+	s.lastSeen = now
+	return s
 }
 
 // GrantKey derives the coarse identity of a request for session grants: a tool+provider pair, or
@@ -119,11 +156,27 @@ func GrantKey(req Request) string {
 	return "http:" + req.Method + "|" + stripPort(req.Host)
 }
 
-// GrantSession records an approval so future matching calls in the same session skip the prompt.
-func (e *Engine) GrantSession(req Request) {
+// GrantSession records a HITL approval so later prompts for the same shape of call in the session
+// are skipped. It never overrides deny; it covers taint escalation only if dec was one.
+func (e *Engine) GrantSession(req Request, dec Decision) {
 	e.mu.Lock()
-	e.granted[req.SessionID+"|"+GrantKey(req)] = true
-	e.mu.Unlock()
+	defer e.mu.Unlock()
+	s := e.sessionLocked(req.SessionID)
+	key := GrantKey(req)
+	s.granted[key] = s.granted[key] || dec.TaintEscalated
+}
+
+// PersistedAllow builds the "always allow" rule for a match, inheriting the constraints of the
+// rule that produced the prompt so a prepended allow can't drop its scope, taints or one-time use.
+func PersistedAllow(m Match, matched *Rule) Rule {
+	r := Rule{Match: m, Action: ActionAllow}
+	if matched != nil {
+		r.Scope = matched.Scope
+		r.OneTime = matched.OneTime
+		r.Taints = append([]string(nil), matched.Taints...)
+		r.Inject = matched.Inject
+	}
+	return r
 }
 
 // Load reads and parses a policy file.
@@ -176,11 +229,19 @@ func (e *Engine) Evaluate(req Request) Decision {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	// A prior "approve for this session" short-circuits the prompt for the same shape of call.
-	if e.granted[req.SessionID+"|"+GrantKey(req)] {
-		return Decision{Action: ActionAllow, Reason: "session grant"}
-	}
+	s := e.sessionLocked(req.SessionID)
+	dec := e.evaluateLocked(s, req)
 
+	// A session grant only answers a prompt the human already answered; deny/scope/one-time still win.
+	if dec.Action == ActionHITL {
+		if coversTaint, ok := s.granted[GrantKey(req)]; ok && (coversTaint || !dec.TaintEscalated) {
+			return Decision{Action: ActionAllow, Rule: dec.Rule, Reason: "session grant"}
+		}
+	}
+	return dec
+}
+
+func (e *Engine) evaluateLocked(s *sessionState, req Request) Decision {
 	// Broker-access tools are governed by the providers section (TUI-managed). get_credential is
 	// deny-by-default so agents never receive raw tokens unless explicitly permitted.
 	if req.Tool == "request_access" || req.Tool == "get_credential" {
@@ -207,11 +268,8 @@ func (e *Engine) Evaluate(req Request) Decision {
 			return Decision{Action: ActionDeny, Rule: rule, Reason: fmt.Sprintf("token missing required scope %q", rule.Scope)}
 		}
 
-		if rule.OneTime {
-			key := req.SessionID + "|" + ruleFingerprint(rule)
-			if e.consumed[key] {
-				return Decision{Action: ActionDeny, Rule: rule, Reason: "one-time authorization already consumed for this session"}
-			}
+		if rule.OneTime && s.consumed[ruleFingerprint(rule)] {
+			return Decision{Action: ActionDeny, Rule: rule, Reason: "one-time authorization already consumed for this session"}
 		}
 
 		action := rule.Action
@@ -222,14 +280,14 @@ func (e *Engine) Evaluate(req Request) Decision {
 		// Read-then-exfiltrate guard: a permitted egress to a non-allowlisted host after
 		// the session has touched sensitive data escalates to a human decision.
 		if action == ActionAllow && e.policy.EscalateWhenTainted && req.Host != "" &&
-			e.sessionTaintedLocked(req.SessionID) && !hostAllowed(e.policy.Egress.Allow, req.Host) {
-			e.stampTaintLocked(req.SessionID, rule.Taints)
-			return Decision{Action: ActionHITL, Rule: rule, Reason: "tainted session egressing to non-allowlisted host"}
+			len(s.tainted) > 0 && !hostAllowed(e.policy.Egress.Allow, req.Host) {
+			s.stampTaint(rule.Taints)
+			return Decision{Action: ActionHITL, Rule: rule, Reason: "tainted session egressing to non-allowlisted host", TaintEscalated: true}
 		}
 
-		e.stampTaintLocked(req.SessionID, rule.Taints)
+		s.stampTaint(rule.Taints)
 		if rule.OneTime && action != ActionDeny {
-			e.consumed[req.SessionID+"|"+ruleFingerprint(rule)] = true
+			s.consumed[ruleFingerprint(rule)] = true
 		}
 		return Decision{Action: action, Rule: rule, Reason: "matched rule"}
 	}
@@ -245,19 +303,9 @@ func (e *Engine) Evaluate(req Request) Decision {
 	return Decision{Action: e.policy.DefaultAction, Reason: "no matching rule (default)"}
 }
 
-func (e *Engine) sessionTaintedLocked(session string) bool {
-	return len(e.tainted[session]) > 0
-}
-
-func (e *Engine) stampTaintLocked(session string, labels []string) {
-	if len(labels) == 0 {
-		return
-	}
-	if e.tainted[session] == nil {
-		e.tainted[session] = make(map[string]bool)
-	}
+func (s *sessionState) stampTaint(labels []string) {
 	for _, l := range labels {
-		e.tainted[session][l] = true
+		s.tainted[l] = true
 	}
 }
 
