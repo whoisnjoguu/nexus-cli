@@ -56,6 +56,8 @@ type Server struct {
 	closeErr  error
 	serveDone chan struct{}
 	closing   chan struct{} // releases long-polls on Close
+
+	checks checkState // POST /v1/check (see SetChecker)
 }
 
 // Start serves the control API for b on 127.0.0.1 with a fresh random token and writes the
@@ -191,6 +193,8 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	mux.HandleFunc("GET /v1/approvals", s.handleList)
 	mux.HandleFunc("POST /v1/approvals/{id}", s.handleDecide)
+	mux.HandleFunc("POST /v1/check", s.handleCheck)
+	mux.HandleFunc("GET /v1/check/{id}", s.handleCheckPoll)
 	return s.guard(mux)
 }
 
