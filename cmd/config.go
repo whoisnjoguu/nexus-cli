@@ -1,8 +1,13 @@
 package cmd
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"regexp"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -20,7 +25,8 @@ type configFile struct {
 	Audit audit.Config `yaml:"audit,omitempty"`
 }
 
-// loadConfig reads nexus.yaml
+// loadConfig reads nexus.yaml strictly: unknown keys anywhere (including the mcp: and audit:
+// sections) and policy validation errors are rejected; warnings are not.
 func loadConfig(path string) (cfg configFile, exists bool, err error) {
 	data, rerr := os.ReadFile(path)
 	if os.IsNotExist(rerr) {
@@ -29,10 +35,96 @@ func loadConfig(path string) (cfg configFile, exists bool, err error) {
 	if rerr != nil {
 		return configFile{}, false, fmt.Errorf("read config %s: %w", path, rerr)
 	}
-	if uerr := yaml.Unmarshal(data, &cfg); uerr != nil {
-		return configFile{}, false, fmt.Errorf("parse config %s: %w", path, uerr)
+	cfg, err = parseConfig(path, data)
+	if err != nil {
+		return configFile{}, false, err
 	}
 	return cfg, true, nil
+}
+
+// parseConfig decodes and validates config bytes (see loadConfig).
+func parseConfig(path string, data []byte) (configFile, error) {
+	cfg, err := decodeConfig(path, data)
+	if err != nil {
+		return configFile{}, err
+	}
+	if verr := policy.Check(cfg.Policy); verr != nil {
+		return configFile{}, fmt.Errorf("%s: %w", path, verr)
+	}
+	return cfg, nil
+}
+
+// configParseError is a YAML syntax or unknown-field error, split into per-line issues.
+type configParseError struct {
+	path   string
+	issues []policy.Issue
+}
+
+func (e *configParseError) Error() string {
+	msgs := make([]string, len(e.issues))
+	for i, is := range e.issues {
+		msgs[i] = strings.TrimPrefix(is.String(), "error ")
+	}
+	return fmt.Sprintf("parse config %s: %s", e.path, strings.Join(msgs, "; "))
+}
+
+// decodeConfig parses config bytes with unknown keys rejected, without policy validation.
+func decodeConfig(path string, data []byte) (configFile, error) {
+	var cfg configFile
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
+		return configFile{}, &configParseError{path: path, issues: yamlIssues(err)}
+	}
+	return cfg, nil
+}
+
+var (
+	yamlLineRe    = regexp.MustCompile(`^(?:yaml: )?line (\d+): (.*)$`)
+	yamlUnknownRe = regexp.MustCompile(`^field (\S+) not found in type (.+)$`)
+)
+
+// yamlSections names the Go types behind each config section for unknown-field messages.
+var yamlSections = map[string]string{
+	"cmd.configFile":      "the top level",
+	"policy.Match":        "a rule match",
+	"policy.Rule":         "a tools rule",
+	"policy.Egress":       "egress",
+	"policy.ProviderRule": "a providers entry",
+	"audit.Config":        "audit",
+	"audit.SinkConfig":    "an audit.sinks entry",
+	"mcp.UpstreamSpec":    "an mcp.upstreams entry",
+}
+
+// yamlIssues turns a yaml.v3 error into one issue per line, e.g. `line 4: unknown field "alow"
+// in a rule match`.
+func yamlIssues(err error) []policy.Issue {
+	var lines []string
+	var te *yaml.TypeError
+	if errors.As(err, &te) {
+		lines = te.Errors
+	} else {
+		lines = []string{err.Error()}
+	}
+	issues := make([]policy.Issue, 0, len(lines))
+	for _, l := range lines {
+		is := policy.Issue{Severity: policy.SeverityError, Msg: strings.TrimPrefix(l, "yaml: ")}
+		if m := yamlLineRe.FindStringSubmatch(l); m != nil {
+			is.Path, is.Msg = "line "+m[1], m[2]
+		}
+		if m := yamlUnknownRe.FindStringSubmatch(is.Msg); m != nil {
+			section, ok := yamlSections[m[2]]
+			if !ok {
+				section = "mcp"
+				if !strings.HasPrefix(m[2], "struct") {
+					section = m[2]
+				}
+			}
+			is.Msg = fmt.Sprintf("unknown field %q in %s", m[1], section)
+		}
+		issues = append(issues, is)
+	}
+	return issues
 }
 
 // appendPolicyRule adds an "always allow" rule to the policy file

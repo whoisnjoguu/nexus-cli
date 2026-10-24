@@ -225,10 +225,16 @@ func DefaultPolicy() Policy {
 			{Match: Match{Tool: "prompts/get"}, Action: ActionAllow},
 			{Match: Match{Tool: "execute_shell"}, Action: ActionDeny},
 			{Match: Match{Tool: "*delete*"}, Action: ActionHITL},
-			{Match: Match{Tool: "*read*"}, Action: ActionAllow},
-			{Match: Match{Tool: "*list*"}, Action: ActionAllow},
-			{Match: Match{Tool: "*search*"}, Action: ActionAllow},
-			{Match: Match{Tool: "*get*"}, Action: ActionAllow},
+			// Read-only verbs, anchored at a word start ("read_file", "fs__read_file") so that
+			// "forget_password" or "thread_reply" don't ride along on a substring match.
+			{Match: Match{Tool: "read_*"}, Action: ActionAllow},
+			{Match: Match{Tool: "*__read_*"}, Action: ActionAllow},
+			{Match: Match{Tool: "list_*"}, Action: ActionAllow},
+			{Match: Match{Tool: "*__list_*"}, Action: ActionAllow},
+			{Match: Match{Tool: "search_*"}, Action: ActionAllow},
+			{Match: Match{Tool: "*__search_*"}, Action: ActionAllow},
+			{Match: Match{Tool: "get_*"}, Action: ActionAllow},
+			{Match: Match{Tool: "*__get_*"}, Action: ActionAllow},
 			{Match: Match{Method: "GET"}, Action: ActionAllow},
 			{Match: Match{Method: "HEAD"}, Action: ActionAllow},
 		},
@@ -338,7 +344,7 @@ func ruleMatches(m Match, req Request) bool {
 		}
 		return len(m.Args) == 0 || argsMatch(m.Args, req.Args)
 	}
-	if m.Method != "" && !strings.EqualFold(m.Method, req.Method) {
+	if m.Method != "" && m.Method != "*" && !strings.EqualFold(m.Method, req.Method) {
 		return false
 	}
 	if m.Host != "" && !hostMatch(m.Host, req.Host) {

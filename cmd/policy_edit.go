@@ -10,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/whoisnjoguu/nexus-cli/internal/tui"
+	"github.com/whoisnjoguu/nexus-cli/pkg/policy"
 	"github.com/whoisnjoguu/nexus-cli/pkg/principal"
 )
 
@@ -47,6 +48,9 @@ var policyEditCmd = &cobra.Command{
 			return nil
 		}
 
+		if verr := policy.Check(edited); verr != nil {
+			return fmt.Errorf("not saved: %w", verr)
+		}
 		cfg.Policy = edited
 		if err := writeConfig(peFile, cfg); err != nil {
 			return err
