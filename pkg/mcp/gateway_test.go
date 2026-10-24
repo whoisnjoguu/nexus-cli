@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -729,6 +730,7 @@ func TestAuditRecordsArgsHash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = lg.Close() })
 	eng := policy.NewEngine(policy.Policy{DefaultAction: policy.ActionDeny, Tools: []policy.Rule{
 		{Match: policy.Match{Tool: "a__echo", Args: map[string]string{"a": "1"}}, Action: policy.ActionAllow},
 		{Match: policy.Match{Tool: "a__whoami"}, Action: policy.ActionHITL},
@@ -773,7 +775,7 @@ func TestStatusFile(t *testing.T) {
 	if f.Stale(time.Now()) || !f.Stale(time.Now().Add(time.Hour)) {
 		t.Error("staleness check wrong")
 	}
-	if fi, _ := os.Stat(f.Path); fi.Mode().Perm() != 0o600 {
+	if fi, _ := os.Stat(f.Path); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Errorf("status file mode %v", fi.Mode())
 	}
 	g.srv.Close()

@@ -41,6 +41,7 @@ func TestTrustCommands(t *testing.T) {
 
 	t.Run("darwin", func(t *testing.T) {
 		t.Setenv("HOME", "/Users/u")
+		t.Setenv("USERPROFILE", "/Users/u") // os.UserHomeDir on Windows
 		in := InstallCommands("darwin", cert)
 		if len(in) != 1 || !reflect.DeepEqual(in[0][:5], []string{"security", "add-trusted-cert", "-r", "trustRoot", "-k"}) ||
 			!strings.HasSuffix(in[0][5], "/Users/u/Library/Keychains/login.keychain-db") || in[0][6] != cert {

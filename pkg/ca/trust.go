@@ -2,6 +2,7 @@ package ca
 
 import (
 	"os"
+	"path"
 	"path/filepath"
 )
 
@@ -21,7 +22,7 @@ func darwinKeychain() string {
 	if err != nil || home == "" {
 		home = "~"
 	}
-	return filepath.Join(home, "Library", "Keychains", "login.keychain-db")
+	return path.Join(filepath.ToSlash(home), "Library", "Keychains", "login.keychain-db")
 }
 
 // InstallCommands returns the commands that add certPath to the OS trust store for goos.

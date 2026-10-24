@@ -38,6 +38,7 @@ func TestDefaultDir(t *testing.T) {
 	}
 	t.Setenv("NEXUS_HOME", "")
 	t.Setenv("HOME", "/home/someone")
+	t.Setenv("USERPROFILE", "/home/someone") // os.UserHomeDir on Windows
 	d, err = DefaultDir()
 	if err != nil || d != filepath.Join("/home/someone", ".nexus", "ca") {
 		t.Fatalf("DefaultDir default = %q, %v", d, err)

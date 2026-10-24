@@ -83,7 +83,7 @@ func Files(path string) ([]string, error) {
 
 // scanFile calls fn for each non-empty line of the file with its 1-based line number.
 func scanFile(name string, fn func(line []byte, lineNo int) error) error {
-	f, err := os.Open(name)
+	f, err := openFile(name, os.O_RDONLY, 0)
 	if err != nil {
 		return fmt.Errorf("open audit log: %w", err)
 	}
@@ -182,7 +182,7 @@ func Head(path string) (*Entry, error) {
 }
 
 func lastEntryOf(name string) (*Entry, error) {
-	f, err := os.Open(name)
+	f, err := openFile(name, os.O_RDONLY, 0)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil

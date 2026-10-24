@@ -145,6 +145,7 @@ func TestHealthBypassesAuth(t *testing.T) {
 	signer, _ := jwt.NewTokenSigner()
 	a := filepath.Join(t.TempDir(), "audit.jsonl")
 	logger, _ := audit.Open(a)
+	t.Cleanup(func() { _ = logger.Close() })
 	p := New(Config{RequireAuth: true, Verifier: signer.Verifier(), Audit: logger,
 		Engine: policy.NewEngine(policy.Policy{Tools: []policy.Rule{{Action: policy.ActionDeny}}})})
 	u, _ := startProxy(t, p)
@@ -420,6 +421,7 @@ func TestApprovalDecisions(t *testing.T) {
 			var persisted []policy.Rule
 			a := filepath.Join(t.TempDir(), "audit.jsonl")
 			logger, _ := audit.Open(a)
+			t.Cleanup(func() { _ = logger.Close() })
 			p := New(Config{RequireAuth: true, Verifier: signer.Verifier(), Engine: hitlEngine(), Approver: ap, Audit: logger,
 				OnPersistRule: func(r policy.Rule) { persisted = append(persisted, r) }})
 			for i := 0; i < 2; i++ {
@@ -460,6 +462,7 @@ func TestApprovalTimeoutDenies(t *testing.T) {
 	tok, _ := signer.MintDualActorToken("agent", "alice", []string{"write"}, time.Minute)
 	a := filepath.Join(t.TempDir(), "audit.jsonl")
 	logger, _ := audit.Open(a)
+	t.Cleanup(func() { _ = logger.Close() })
 	var sawErr error
 	ap := hitl.ApproverFunc(func(ctx context.Context, _ hitl.Request) hitl.Decision {
 		<-ctx.Done()

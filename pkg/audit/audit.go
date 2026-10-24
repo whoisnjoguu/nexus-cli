@@ -171,7 +171,7 @@ func (l *Logger) reopen() error {
 		l.f.Close()
 		l.f = nil
 	}
-	f, err := os.OpenFile(l.path, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := openFile(l.path, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return fmt.Errorf("open audit log: %w", err)
 	}
@@ -192,7 +192,7 @@ func (l *Logger) reload() error {
 			return err
 		}
 		if end != size {
-			if err := l.f.Truncate(end); err != nil {
+			if err := truncateFile(l.path, end); err != nil {
 				return fmt.Errorf("repair torn audit entry: %w", err)
 			}
 			size = end
@@ -274,7 +274,7 @@ func (l *Logger) appendLocked(e Entry) (Entry, error) {
 	if err != nil {
 		// Drop a partial write so the next writer doesn't append to a corrupt line.
 		if n > 0 {
-			_ = l.f.Truncate(l.size)
+			_ = truncateFile(l.path, l.size)
 		}
 		return e, fmt.Errorf("write audit entry: %w", err)
 	}

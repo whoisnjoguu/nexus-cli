@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -224,7 +223,7 @@ func (c *notifyConn) rejectedBeforeRequest() error {
 		return nil
 	}
 	var alert tls.AlertError
-	if errors.As(c.firstErr, &alert) || errors.Is(c.firstErr, syscall.ECONNRESET) {
+	if errors.As(c.firstErr, &alert) || isConnReset(c.firstErr) {
 		return c.firstErr
 	}
 	return nil

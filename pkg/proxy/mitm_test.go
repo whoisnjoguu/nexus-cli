@@ -145,6 +145,7 @@ func newMITM(t *testing.T, pol policy.Policy, mod func(*Config)) *mitmHarness {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = logger.Close() })
 	cfg := Config{
 		RequireAuth:       true,
 		Verifier:          h.signer.Verifier(),

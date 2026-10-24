@@ -241,7 +241,7 @@ func TestRunPropagatesExitCode(t *testing.T) {
 	if err := e.run([]string{"--mitm", "off", "--no-audit"}, "exit", "0"); err != nil {
 		t.Fatalf("run exit 0 = %v", err)
 	}
-	if !strings.Contains(e.stderr.String(), "[nexus] gating cmd.test via 127.0.0.1:") ||
+	if !strings.Contains(e.stderr.String(), "[nexus] gating "+filepath.Base(os.Args[0])+" via 127.0.0.1:") ||
 		!strings.Contains(e.stderr.String(), "approve prompts with: nexus-cli approve") {
 		t.Fatalf("missing gating banner: %q", e.stderr.String())
 	}
@@ -308,7 +308,7 @@ func TestRunSetsGateEnvWithMITM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("child token does not verify: %v", err)
 	}
-	if claims.AgentID != filepath.Base(os.Args[0]) || claims.ActAs != "alice@example.com" ||
+	if claims.AgentID != strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe") || claims.ActAs != "alice@example.com" ||
 		strings.Join(claims.Scopes, ",") != "repo:read" {
 		t.Fatalf("claims = %+v", claims)
 	}

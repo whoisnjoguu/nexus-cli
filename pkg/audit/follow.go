@@ -132,7 +132,7 @@ func sameRotated(a, b []string, active string) bool {
 }
 
 func readActive(path string) ([]Entry, os.FileInfo, int64, error) {
-	f, err := os.Open(path)
+	f, err := openFile(path, os.O_RDONLY, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil, 0, nil
 	}
@@ -175,7 +175,7 @@ func readComplete(f *os.File, off int64) ([]Entry, int64, error) {
 }
 
 func (s *follower) incremental(fn func(Entry) error) error {
-	f, err := os.Open(s.path)
+	f, err := openFile(s.path, os.O_RDONLY, 0)
 	if err != nil {
 		s.rescan = true
 		return nil
