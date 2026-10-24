@@ -77,6 +77,9 @@ verifiable **dual-actor identity** (Agent + Human), human-in-the-loop approvals,
 - **Agent-requested access** — MCP tools let an agent request provider access; the human approves consent and the token stays in the broker (`get_credential` is deny-by-default).
 - **TUI policy editor** — `nexus-cli policy edit` manages providers, scopes, tools, egress, and defaults; writes `nexus.yaml` for you.
 - **Tamper-evident audit** — hash-chained JSONL log with `audit verify`.
+- **One-command gating** — `nexus-cli run -- <agent>` puts any CLI agent or tool behind the gate: proxy, token, and CA trust are wired into its environment automatically.
+- **HTTPS interception** — with a local CA (`nexus-cli ca init`), path/method rules, `one_time`, taints, and `inject` apply to HTTPS too; pinned hosts can be passed through.
+- **Approve from anywhere** — answer prompts in the proxy's terminal or from another one with `nexus-cli approve`.
 - **Plug-in anywhere** — HTTP forward proxy, MCP stdio gateway (aggregates & gates upstream MCP servers), or embedded Go/Python SDK.
 
 ## Install
@@ -112,11 +115,22 @@ image, and a Homebrew formula are published on each release via `goreleaser`. Ch
 
 ## Quick start
 
+Put any agent behind the gate with one command — no token copying, no proxy env by hand:
+
 ```bash
-nexus-cli init                                          # scaffold nexus.yaml + MCP host configs
-nexus-cli login --provider slack                        # authenticate via the nexus-framework Gateway
-nexus-cli dev                                           # start the gated proxy (auth on by default)
-nexus-cli doctor                                        # diagnose the local setup
+nexus-cli init                                   # scaffold nexus.yaml + MCP host configs
+nexus-cli ca init                                # optional: local CA so HTTPS gets per-request policy
+nexus-cli run -- claude                          # or: nexus-cli run -- python agent.py, -- curl …
+nexus-cli approve                                # in another terminal: answer approval prompts
+```
+
+`run` starts an in-process gated proxy, mints a token for the command, launches it with
+`HTTP(S)_PROXY` (and, with a CA, `SSL_CERT_FILE` & co.) pointing at the gate, and exits with the
+command's exit code. Optionally log in first so calls are attributed to a verified human:
+
+```bash
+nexus-cli login --provider slack                 # authenticate via the nexus-framework Gateway
+nexus-cli doctor                                 # diagnose the local setup
 ```
 
 > Login is brokered by a running [nexus-framework](https://github.com/Prescott-Data/nexus-framework)
@@ -135,6 +149,8 @@ egress:
   allow:
     - "*.github.com"
     - "api.internal.company.com"
+  passthrough: # HTTPS hosts tunnelled without interception (cert-pinned clients)
+    - "*.pinned.example.com"
 
 escalate_when_tainted: true # tainted session → egress to non-allowlisted host requires approval
 default_action: deny
@@ -221,11 +237,15 @@ secretless credential injection.
 ### Mint a dual-actor token
 
 ```bash
-nexus-cli identity mint --agent-id claims-processor-v1 --scopes "db:read,payout:write" --ttl 30
+nexus-cli identity mint --agent-id claims-processor-v1 --scopes "db:read,payout:write" --ttl 900
+nexus-cli identity mint -a agent-x -s db:read -q              # print only the token (for scripts)
+nexus-cli identity mint -a agent-x -s db:read --single-use    # one request, then rejected
 ```
 
-`act_as` binds to your logged-in principal and requested scopes are **capped by your ceiling**. The
-token carries a unique `jti` for single-use / replay protection and the broker `connection_id` so the
+`act_as` binds to your logged-in principal and requested scopes are **capped by your ceiling**.
+Tokens default to a 900s lifetime and are **reusable until they expire** (an agent makes many
+requests with one token); `--single-use` tokens — or any token on a `dev --single-use` proxy — are
+rejected on reuse via their unique `jti`. The token also carries the broker `connection_id` so the
 proxy can inject upstream credentials on your behalf. The signing key is persisted to
 `~/.nexus/ed25519.key` (`0600`, created on first use).
 
@@ -256,26 +276,103 @@ Services can verify nexus-issued tokens themselves instead of trusting proxy hea
 nexus-cli keys jwks    # prints the Ed25519 public key as a JSON Web Key Set
 ```
 
+## Gate a command: `nexus-cli run`
+
+```bash
+nexus-cli run -- <command> [args...]
+nexus-cli run --policy ./nexus.yaml --agent-id my-agent -- python agent.py
+nexus-cli run --scopes repo:read --ttl 1h -- codex
+nexus-cli run --attach 127.0.0.1:8075 -- node agent.js          # reuse a running `nexus-cli dev`
+eval "$(nexus-cli run --attach 127.0.0.1:8075 --print-env)"      # gate the current shell instead
+```
+
+What `run` does:
+
+- **Proxy** — starts an in-process proxy on `127.0.0.1:<random>` with auth required (or, with
+  `--attach host:port`, verifies a running `nexus-cli dev` via its health endpoint; that proxy must use
+  the same signing key, i.e. the same `--key`).
+- **Token** — mints a dual-actor token for the command: `sub` = `--agent-id` (default: the command's
+  base name), `act_as` = your logged-in principal, else `--user-id`, else `<os user>@<hostname>`
+  (with a warning that attribution is unverified). Scopes default to every `scope:` required by the
+  policy, capped by your login ceiling; the token lives for `--ttl` (default 12h = max run duration).
+- **Environment** — the child inherits your environment plus `HTTP_PROXY`, `HTTPS_PROXY`,
+  `http_proxy`, `https_proxy`, `NEXUS_PROXY_URL` = `http://nexus:<token>@127.0.0.1:<port>`,
+  `NO_PROXY`/`no_proxy` (`--no-proxy`, default `localhost,127.0.0.1,::1`), `NODE_USE_ENV_PROXY=1`,
+  and `NEXUS_RUN=1`. With HTTPS interception on, the CA bundle (system roots + nexus CA) is exported
+  as `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `AWS_CA_BUNDLE`,
+  `PIP_CERT`, `CARGO_HTTP_CAINFO`, `DENO_CERT`, `HEX_CACERTS_PATH`, plus `NODE_EXTRA_CA_CERTS` = the
+  nexus CA certificate.
+- **Approvals** — the command owns the terminal, so `run` never draws a prompt: it prints a one-line
+  notice and you answer with `nexus-cli approve` from another terminal (`--approval-timeout`, default
+  2m, then the call is denied).
+- **Exit** — Ctrl-C goes to the command (nexus waits for it), SIGTERM is relayed, and `run` exits with
+  the command's exit code. Every decision is audited (`--no-audit` to disable).
+
+Other flags: `--strict` (approve every call), `--inject` (broker credentials for `inject: true`
+rules), `--mitm auto|on|off` (default `auto`: intercept if a CA exists; `on` creates one), `--key`.
+`run` refuses to nest inside another `run` (`NEXUS_RUN=1`) unless `--attach` is used, and
+`--print-env` requires `--attach` (an in-process proxy stops when `run` exits).
+
 ## Run the local zero-trust proxy
 
 ```bash
 nexus-cli dev --port 8075                 # policy-enforced; require-auth ON by default
-nexus-cli dev --strict                    # HITL on every call, including GET/CONNECT
-nexus-cli dev --require-auth=false         # disable token requirement (demos only)
-nexus-cli dev --policy ./nexus.yaml        # explicit policy path
-nexus-cli dev --inject                     # inject broker credentials for inject: rules
-nexus-cli dev --no-audit                   # disable the audit log
+nexus-cli dev --listen 127.0.0.1:9000     # explicit bind address (non-loopback prints a warning)
+nexus-cli dev --strict                    # HITL on every call, including ones the policy allows
+nexus-cli dev --require-auth=false        # disable token requirement (demos only)
+nexus-cli dev --policy ./nexus.yaml       # explicit policy path
+nexus-cli dev --inject                    # inject broker credentials for inject: rules
+nexus-cli dev --single-use                # reject any token reuse
+nexus-cli dev --mitm on                   # HTTPS interception: auto (default) | on | off
+nexus-cli dev --approval-timeout 2m       # how long a call waits for a human (default 60s)
+nexus-cli dev --no-audit                  # disable the audit log
 ```
 
 - Inbound `X-Nexus-*` headers are **always stripped** — identity comes only from a verified token.
 - **Forward proxy**: point an agent at it via `HTTP_PROXY` / `HTTPS_PROXY`; approved requests are
-  forwarded with dual-actor attribution headers injected. HTTPS is tunneled via `CONNECT` (gated on
-  host). HITL prompts are serialized and **fail closed** when no interactive terminal is attached.
+  forwarded with dual-actor attribution headers (`X-Nexus-Agent-ID`, `X-Nexus-Act-As`) injected and
+  the proxy credentials removed.
+- **Authentication**: put the token in the proxy URL — `http://nexus:<TOKEN>@127.0.0.1:8075` sends
+  `Proxy-Authorization: Basic base64(nexus:<TOKEN>)`, which every proxy-aware client supports (the
+  username is ignored). `Proxy-Authorization: Bearer`, `Authorization: Bearer`, and `X-Nexus-Token`
+  are also accepted for plain HTTP. A `CONNECT` without a valid token gets `407` before any TLS.
+- **Approvals**: prompts appear in the `dev` terminal (when it is interactive) **and** can be answered
+  from any other terminal with `nexus-cli approve`; the first answer wins. With no answer within
+  `--approval-timeout` the call is denied (fail closed).
+- **Health**: `GET http://127.0.0.1:8075/_nexus/health` (no token needed) returns
+  `{"status":"ok","service":"nexus-cli","mitm":"on|off",…}` plus `ca_fingerprint` when
+  intercepting and `token: valid|invalid` when a token is presented.
 
 ```bash
-TOKEN=$(nexus-cli identity mint -a agent-x -s db:read -t 60 | awk '/Micro-JWT/{print $2}')
-curl -x http://127.0.0.1:8075 -H "Authorization: Bearer $TOKEN" http://api.internal.company.com/v1/claims/1
+TOKEN=$(nexus-cli identity mint -a agent-x -s db:read -q)
+curl -x "http://nexus:$TOKEN@127.0.0.1:8075" http://api.internal.company.com/v1/claims/1
 ```
+
+### HTTPS interception
+
+Without a CA, HTTPS is tunnelled via `CONNECT` and gated on the **host** only. Create a local CA and
+nexus terminates TLS for each `CONNECT` with a per-host certificate, so every request inside the
+tunnel — keep-alive, chunked bodies, websocket upgrades — goes through the same pipeline as plain
+HTTP: path/method rules, scopes, `one_time`, taints, HITL, `inject: true`, and per-request audit.
+
+```bash
+nexus-cli ca init          # create the CA under ~/.nexus/ca (or $NEXUS_HOME/ca)
+nexus-cli ca path          # CA certificate path (--bundle: write system roots + CA bundle)
+nexus-cli ca fingerprint   # SHA-256 fingerprint
+nexus-cli ca install       # show (--run: execute) the commands that trust it OS-wide
+nexus-cli ca uninstall     # show (--run: execute) the commands that remove it
+```
+
+- `dev --mitm auto` (default) intercepts when a CA exists; `on` creates one; `off` disables it.
+- Clients must trust the CA: `nexus-cli run` sets the CA environment variables automatically, or
+  install it system-wide with `nexus-cli ca install`. A client that rejects the certificate is
+  audited as a deny and nexus prints a hint (`client rejected nexus CA for <host>; …`).
+- The authenticated identity, replay and single-use checks happen once on the `CONNECT` and apply to
+  every request on that tunnel. A request whose `Host` differs from the `CONNECT` host is rejected
+  (domain-fronting guard). The client's own `Authorization` header inside the tunnel is forwarded.
+- Hosts listed under `egress.passthrough` (same `*.example.com` patterns as `egress.allow`) are
+  tunnelled raw and gated per host — use it for certificate-pinned clients.
+- Upstream TLS is always verified against the system roots; nexus speaks HTTP/1.1 upstream.
 
 ## MCP gateway
 
@@ -414,34 +511,39 @@ executing (approve once, for the session, or always).
 ### GitHub Copilot / VS Code
 
 `nexus-cli init` writes `.vscode/mcp.json`; open it and click **Start**, or use the `code --add-mcp`
-one-liner above. For HTTP tool traffic, route it through the proxy instead:
+one-liner above. For HTTP tool traffic, route it through a running `nexus-cli dev`:
 
 ```bash
-export HTTP_PROXY="http://127.0.0.1:8075"
-export HTTPS_PROXY="http://127.0.0.1:8075"
+eval "$(nexus-cli run --attach 127.0.0.1:8075 --print-env)"   # sets HTTP(S)_PROXY with a token + CA vars
 ```
 
 ## Commands
 
-| Command                   | Description                                            |
-| ------------------------- | ------------------------------------------------------ |
-| `nexus-cli init`          | Scaffold `nexus.yaml` + MCP host configs               |
-| `nexus-cli login`         | Authenticate the human principal via the Gateway       |
-| `nexus-cli connect`       | Connect an additional provider to your session         |
-| `nexus-cli connections`   | List provider connections + live status                |
-| `nexus-cli providers`     | List providers available on the Gateway                |
-| `nexus-cli whoami`        | Show the logged-in principal                           |
-| `nexus-cli logout`        | Clear the cached session                               |
-| `nexus-cli identity mint` | Mint a short-lived dual-actor JWT for an agent session |
-| `nexus-cli dev`           | Start the local zero-trust proxy with policy + HITL    |
-| `nexus-cli mcp serve`     | Serve / aggregate MCP tool servers behind the policy   |
-| `nexus-cli policy edit`   | Interactive TUI policy editor (writes `nexus.yaml`)    |
-| `nexus-cli policy test`   | Dry-run a tool call against the policy                 |
-| `nexus-cli audit tail`    | Show recent authorization decisions                    |
-| `nexus-cli audit verify`  | Verify the audit hash chain                            |
-| `nexus-cli keys jwks`     | Print the public verification key as a JWKS            |
-| `nexus-cli doctor`        | Diagnose the local setup                               |
-| `nexus-cli version`       | Print the version, commit, and platform                |
+| Command                    | Description                                            |
+| -------------------------- | ------------------------------------------------------ |
+| `nexus-cli init`           | Scaffold `nexus.yaml` + MCP host configs               |
+| `nexus-cli login`          | Authenticate the human principal via the Gateway       |
+| `nexus-cli connect`        | Connect an additional provider to your session         |
+| `nexus-cli connections`    | List provider connections + live status                |
+| `nexus-cli providers`      | List providers available on the Gateway                |
+| `nexus-cli whoami`         | Show the logged-in principal                           |
+| `nexus-cli logout`         | Clear the cached session                               |
+| `nexus-cli identity mint`  | Mint a short-lived dual-actor JWT for an agent session |
+| `nexus-cli run -- <cmd>`   | Run a command behind the gate (proxy + token + CA env) |
+| `nexus-cli dev`            | Start the local zero-trust proxy with policy + HITL    |
+| `nexus-cli approve`        | Answer pending approval prompts from another terminal  |
+| `nexus-cli ca init`        | Create the local CA for HTTPS interception             |
+| `nexus-cli ca path`        | Print the CA path (`--bundle`: write the CA bundle)    |
+| `nexus-cli ca fingerprint` | Print the CA certificate's SHA-256 fingerprint         |
+| `nexus-cli ca install`     | Trust the CA in the OS store (`uninstall` to remove)   |
+| `nexus-cli mcp serve`      | Serve / aggregate MCP tool servers behind the policy   |
+| `nexus-cli policy edit`    | Interactive TUI policy editor (writes `nexus.yaml`)    |
+| `nexus-cli policy test`    | Dry-run a tool call against the policy                 |
+| `nexus-cli audit tail`     | Show recent authorization decisions                    |
+| `nexus-cli audit verify`   | Verify the audit hash chain                            |
+| `nexus-cli keys jwks`      | Print the public verification key as a JWKS            |
+| `nexus-cli doctor`         | Diagnose the local setup                               |
+| `nexus-cli version`        | Print the version, commit, and platform                |
 
 ## Project Layout
 
@@ -455,12 +557,14 @@ nexus-cli/
 ├── pkg/
 │   ├── audit/           # hash-chained, tamper-evident decision log
 │   ├── credential/      # broker credential resolver (nexus-framework SDK)
-│   ├── hitl/            # Bubbletea human-in-the-loop approval prompt
+│   ├── ca/              # local CA + per-host leaf certificates for HTTPS interception
+│   ├── control/         # loopback control API used by `nexus-cli approve`
+│   ├── hitl/            # approval broker, terminal prompt, first-answer-wins fan-out
 │   ├── jwt/             # Ed25519 signing, verification, keystore, replay guard, JWKS
 │   ├── mcp/             # MCP stdio server + upstream gateway + broker-access tools
 │   ├── policy/          # declarative least-privilege policy engine
 │   ├── principal/       # human identity + multi-provider connections via the Gateway
-│   ├── proxy/           # intercepting forward proxy + CONNECT tunneling + auth
+│   ├── proxy/           # forward proxy, auth, CONNECT tunnelling + TLS interception
 │   └── sdk/             # embeddable Go gate + gating http.RoundTripper
 ├── sdk/python/          # Python SDK
 ├── Dockerfile           # distroless sidecar image
@@ -528,5 +632,8 @@ rather than a public issue.
   client-supplied headers. Tokens are validated for signature, issuer, audience, and expiry.
 - MCP `--strict` fails closed: tool calls are denied unless a human explicitly approves via
   elicitation.
-- HTTPS `CONNECT` traffic is tunneled, not inspected; per-request payload inspection
-  applies to plain HTTP only.
+- HTTPS `CONNECT` traffic is inspected per request only when HTTPS interception is on (a CA
+  exists, see `nexus-cli ca init`) and the host is not in `egress.passthrough`; otherwise it is
+  tunnelled and gated on host only.
+- The CA private key (`~/.nexus/ca`, 0600) can mint certificates for any host: anyone who can read
+  it can intercept TLS for clients that trust the CA. `nexus-cli ca uninstall` removes OS trust.
