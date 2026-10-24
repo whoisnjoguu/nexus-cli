@@ -1,6 +1,6 @@
 module github.com/whoisnjoguu/nexus-cli
 
-go 1.27.1
+go 1.27.2
 
 require (
 	github.com/Prescott-Data/nexus-framework/nexus-sdk v0.0.0-20260922063304-0fc01b084e35
