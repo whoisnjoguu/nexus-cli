@@ -139,8 +139,6 @@ func (p *ProxyServer) handshakeFailed(hostname, target string, id identity, err 
 		return // shutting down; not the client's fault
 	}
 	hint := fmt.Sprintf("client rejected nexus CA for %s; run 'nexus-cli ca install' or use 'nexus-cli run'", hostname)
-	p.record(id.jti, id.agentID, id.actAs, http.MethodConnect, target, id.scopes, false, hint+" ("+err.Error()+")")
-
 	p.hintMu.Lock()
 	last, seen := p.hintLast[hostname]
 	now := time.Now()
@@ -152,6 +150,8 @@ func (p *ProxyServer) handshakeFailed(hostname, target string, id identity, err 
 	if show {
 		fmt.Fprintf(p.stderr, "[nexus] %s\n", hint)
 	}
+	// Audit last, so anything observing the entry also sees the hint.
+	p.record(id.jti, id.agentID, id.actAs, http.MethodConnect, target, id.scopes, false, hint+" ("+err.Error()+")")
 }
 
 // splitConnectHost returns the lowercase hostname of a CONNECT authority and the upstream host to
