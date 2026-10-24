@@ -413,3 +413,23 @@ func TestEventsSSEStreamsPastWriteTimeoutAndCloses(t *testing.T) {
 		t.Fatal("stream not closed on server Close")
 	}
 }
+
+func TestUISessionActive(t *testing.T) {
+	s, _ := startServer(t, time.Minute)
+	if s.UISessionActive() || s.UIPageURL() != "http://"+s.Info().Addr+"/ui" {
+		t.Fatal("no session yet")
+	}
+	c := login(t, s)
+	if !s.UISessionActive() {
+		t.Fatal("session should be active")
+	}
+	if resp := browserReq(t, s, "POST", "/v1/ui/logout", "", c.apply); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("logout: %d", resp.StatusCode)
+	}
+	if s.UISessionActive() {
+		t.Fatal("logout must end the session")
+	}
+	if resp := browserReq(t, s, "GET", "/v1/ui/state", "", c.apply); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("after logout: %d", resp.StatusCode)
+	}
+}

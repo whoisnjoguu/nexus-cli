@@ -504,3 +504,14 @@ func writeSSE(w http.ResponseWriter, event string, v any) error {
 	_, err = w.Write(buf)
 	return err
 }
+
+// UIPageURL is the approvals web UI page of this endpoint (without a login code).
+func (s *Server) UIPageURL() string { return "http://" + s.host + "/ui" }
+
+// UISessionActive reports whether any web UI session is currently signed in.
+func (s *Server) UISessionActive() bool {
+	s.ui.mu.Lock()
+	defer s.ui.mu.Unlock()
+	s.ui.pruneLocked(s.ui.now())
+	return len(s.ui.sessions) > 0
+}
