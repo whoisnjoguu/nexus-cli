@@ -7,6 +7,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
@@ -34,6 +35,10 @@ func newApproveCmd() *cobra.Command {
 	var (
 		list     bool
 		decision string
+		web      bool
+		noOpen   bool
+		pid      int
+		quiet    bool
 	)
 	c := &cobra.Command{
 		Use:   "approve [request-id]",
@@ -42,10 +47,17 @@ func newApproveCmd() *cobra.Command {
 
 Without arguments, opens an interactive watcher that shows the oldest pending request across all
 local endpoints: press y (once), s (this session), a (always, saved to policy) or n (deny); q quits.
+The watcher rings the terminal bell when a new request arrives (--quiet disables it).
+
+--web opens the local approvals web UI of one endpoint in your browser using a one-time login link
+(valid 60s). With several endpoints running, pick one with --pid; otherwise the endpoint with the
+oldest pending request (or the most recently started one) is used.
 
   nexus-cli approve                          # interactive watcher
   nexus-cli approve --list                   # print pending requests and exit
-  nexus-cli approve <id> --decision once     # decide one request (once|session|always|deny)`,
+  nexus-cli approve <id> --decision once     # decide one request (once|session|always|deny)
+  nexus-cli approve --web                    # open the web UI in a browser
+  nexus-cli approve --web --no-open          # just print the one-time URL`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -53,7 +65,18 @@ local endpoints: press y (once), s (this session), a (always, saved to policy) o
 				ctx = context.Background()
 			}
 			out := cmd.OutOrStdout()
+			if noOpen && !web {
+				return errors.New("--no-open requires --web")
+			}
+			if pid != 0 && !web {
+				return errors.New("--pid requires --web")
+			}
 			switch {
+			case web:
+				if list || len(args) > 0 || decision != "" {
+					return errors.New("--web cannot be combined with --list, a request id or --decision")
+				}
+				return approveWeb(ctx, out, pid, !noOpen)
 			case list:
 				if len(args) > 0 || decision != "" {
 					return errors.New("--list cannot be combined with a request id or --decision")
@@ -71,12 +94,16 @@ local endpoints: press y (once), s (this session), a (always, saved to policy) o
 			case decision != "":
 				return errors.New("--decision requires a request id (see `nexus-cli approve --list`)")
 			default:
-				return approveWatch(ctx, out)
+				return approveWatch(ctx, out, !quiet)
 			}
 		},
 	}
 	c.Flags().BoolVar(&list, "list", false, "Print pending approval requests and exit")
 	c.Flags().StringVar(&decision, "decision", "", "Decision for <request-id>: once, session, always, or deny")
+	c.Flags().BoolVar(&web, "web", false, "Open the approvals web UI in a browser (one-time login link)")
+	c.Flags().BoolVar(&noOpen, "no-open", false, "With --web, print the URL instead of opening a browser")
+	c.Flags().IntVar(&pid, "pid", 0, "With --web, the process ID of the endpoint to open (see `nexus-cli approve --list`)")
+	c.Flags().BoolVarP(&quiet, "quiet", "q", false, "Do not ring the terminal bell when new requests arrive")
 	return c
 }
 
@@ -183,11 +210,16 @@ func decisionMark(d hitl.Decision) string {
 
 // ---- interactive watcher ----
 
-func approveWatch(ctx context.Context, out io.Writer) error {
+func approveWatch(ctx context.Context, out io.Writer, bell bool) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	m := newWatchModel(ctx, control.Discover)
-	_, err := tea.NewProgram(m, tea.WithContext(ctx), tea.WithOutput(out)).Run()
+	// The renderer writes whole frames; serialising writes keeps the bell from splitting one.
+	lw := &lockedWriter{w: out}
+	if bell {
+		m.bell = func() { _, _ = lw.Write([]byte("\a")) }
+	}
+	_, err := tea.NewProgram(m, tea.WithContext(ctx), tea.WithOutput(lw)).Run()
 	m.closeAll()
 	if errors.Is(err, tea.ErrProgramKilled) && ctx.Err() != nil {
 		return nil
@@ -212,6 +244,19 @@ type watchModel struct {
 	status   string
 	busy     bool
 	discErr  error
+	bell     func()                     // rings the terminal bell; nil when quiet
+	seen     map[string]map[string]bool // endpoint key → request IDs already shown (shared)
+}
+
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }
 
 type (
@@ -236,7 +281,7 @@ type (
 )
 
 func newWatchModel(ctx context.Context, discover func() ([]control.Info, error)) watchModel {
-	return watchModel{ctx: ctx, discover: discover, eps: map[string]*watchEndpoint{}, gen: new(int), now: time.Now()}
+	return watchModel{ctx: ctx, discover: discover, eps: map[string]*watchEndpoint{}, gen: new(int), now: time.Now(), seen: map[string]map[string]bool{}}
 }
 
 func endpointKey(i control.Info) string { return fmt.Sprintf("%s|%d|%s", i.Addr, i.PID, i.Token) }
@@ -336,7 +381,9 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.status = fmt.Sprintf("%s %s → %s", decisionMark(msg.d), msg.id, msg.d)
 		}
-		if ep, ok := m.eps[msg.key]; ok {
+		// Keep the request on screen if the decision may not have reached the endpoint (e.g. a
+		// network error) so it can be retried; the long-poll would not resend an unchanged queue.
+		if ep, ok := m.eps[msg.key]; ok && (msg.err == nil || errors.Is(msg.err, hitl.ErrUnknownRequest)) {
 			ep.pending = slicesDeleteID(ep.pending, msg.id)
 		}
 		return m, nil
@@ -381,6 +428,9 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.pollCmd(msg.key, ep, 0, approveRetryDelay)
 		}
 		ep.pending = msg.reqs
+		if m.markSeen(msg.key, msg.reqs) && m.bell != nil {
+			m.bell() // a single byte through the locked writer; never blocks for long
+		}
 		return m, m.pollCmd(msg.key, ep, approvePollWait, 0)
 
 	case watchTickMsg:
@@ -388,6 +438,21 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, watchTick()
 	}
 	return m, nil
+}
+
+// markSeen records the requests of endpoint key and reports whether any is new.
+func (m watchModel) markSeen(key string, reqs []hitl.Request) bool {
+	old := m.seen[key]
+	cur := make(map[string]bool, len(reqs))
+	fresh := false
+	for _, r := range reqs {
+		cur[r.ID] = true
+		if !old[r.ID] {
+			fresh = true
+		}
+	}
+	m.seen[key] = cur
+	return fresh
 }
 
 func slicesDeleteID(reqs []hitl.Request, id string) []hitl.Request {
