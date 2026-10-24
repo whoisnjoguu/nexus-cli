@@ -45,6 +45,9 @@ type Rule struct {
 // Egress constrains which hosts an agent may reach at all.
 type Egress struct {
 	Allow []string `yaml:"allow"`
+	// Passthrough lists host patterns whose HTTPS traffic is tunnelled without TLS interception
+	// (e.g. certificate-pinned clients); only the host-level CONNECT decision applies to them.
+	Passthrough []string `yaml:"passthrough,omitempty"`
 }
 
 // Policy is the full ruleset loaded from nexus.yaml.
@@ -351,6 +354,10 @@ func hasScope(have []string, want string) bool {
 	}
 	return false
 }
+
+// HostMatches reports whether host (with or without a port) matches any of patterns, using the
+// egress glob semantics: exact hosts or a single leading "*." wildcard label.
+func HostMatches(patterns []string, host string) bool { return hostAllowed(patterns, host) }
 
 func hostAllowed(allow []string, host string) bool {
 	host = stripPort(host)
