@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nexus-agent-sdk"
-version = "0.1.0"
+version = "0.2.0"
 description = "Gate AI agent tool calls through nexus-cli's least-privilege policy, identity, and audit."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -12,13 +12,22 @@ license = { text = "MIT" }
 authors = [{ name = "Alan N" }]
 keywords = ["ai", "agents", "security", "zero-trust", "mcp", "guardrails"]
 dependencies = []
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Typing :: Typed",
+]
 
 [project.optional-dependencies]
 httpx = ["httpx>=0.24"]
-dev = ["pytest>=7", "httpx>=0.24"]
+requests = ["requests>=2.28"]
+all = ["httpx>=0.24", "requests>=2.28"]
+dev = ["pytest>=7", "httpx>=0.24", "requests>=2.28"]
 
 [project.urls]
 Homepage = "https://github.com/whoisnjoguu/nexus-cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["nexus"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
