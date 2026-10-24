@@ -1,6 +1,6 @@
 //go:build windows
 
-package audit
+package fslock
 
 import (
 	"os"
@@ -8,12 +8,12 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func lockFile(f *os.File) error {
+func lock(f *os.File) error {
 	ol := new(windows.Overlapped)
 	return windows.LockFileEx(windows.Handle(f.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, ol)
 }
 
-func unlockFile(f *os.File) {
+func unlock(f *os.File) {
 	ol := new(windows.Overlapped)
 	_ = windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 1, 0, ol)
 }

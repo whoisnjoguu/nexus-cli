@@ -1,13 +1,13 @@
 //go:build unix
 
-package audit
+package fslock
 
 import (
 	"os"
 	"syscall"
 )
 
-func lockFile(f *os.File) error {
+func lock(f *os.File) error {
 	for {
 		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
 		if err != syscall.EINTR {
@@ -16,4 +16,4 @@ func lockFile(f *os.File) error {
 	}
 }
 
-func unlockFile(f *os.File) { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }
+func unlock(f *os.File) { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }
