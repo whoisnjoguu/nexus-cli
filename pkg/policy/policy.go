@@ -28,6 +28,8 @@ type Match struct {
 	Path     string `yaml:"path"`
 	Tool     string `yaml:"tool"`
 	Provider string `yaml:"provider"`
+	// Args constrains tool rules by call arguments (see argsMatch); ignored without Tool/Provider.
+	Args map[string]string `yaml:"args,omitempty"`
 }
 
 // Rule binds a match to an action and the scope required to exercise it.
@@ -79,6 +81,7 @@ type Request struct {
 	Tool      string
 	Provider  string
 	Scopes    []string
+	Args      map[string]any // tool-call arguments, matched by Match.Args
 }
 
 // Decision is the outcome of evaluating a request.
@@ -215,6 +218,11 @@ func DefaultPolicy() Policy {
 		DefaultAction:       ActionHITL,
 		EscalateWhenTainted: true,
 		Tools: []Rule{
+			// An MCP server asking the host LLM to generate text is a prompt-injection vector.
+			{Match: Match{Tool: "sampling/createMessage"}, Action: ActionHITL},
+			// MCP resource reads and prompt templates are read-only ("*" globs stop at "/").
+			{Match: Match{Tool: "resources/read"}, Action: ActionAllow},
+			{Match: Match{Tool: "prompts/get"}, Action: ActionAllow},
 			{Match: Match{Tool: "execute_shell"}, Action: ActionDeny},
 			{Match: Match{Tool: "*delete*"}, Action: ActionHITL},
 			{Match: Match{Tool: "*read*"}, Action: ActionAllow},
@@ -328,7 +336,7 @@ func ruleMatches(m Match, req Request) bool {
 		if m.Provider != "" && !toolMatch(m.Provider, req.Provider) {
 			return false
 		}
-		return true
+		return len(m.Args) == 0 || argsMatch(m.Args, req.Args)
 	}
 	if m.Method != "" && !strings.EqualFold(m.Method, req.Method) {
 		return false
@@ -411,5 +419,5 @@ func pathMatch(pattern, path string) bool {
 }
 
 func ruleFingerprint(r *Rule) string {
-	return strings.Join([]string{r.Match.Method, r.Match.Host, r.Match.Path, r.Match.Tool, r.Scope}, "\x1f")
+	return strings.Join([]string{r.Match.Method, r.Match.Host, r.Match.Path, r.Match.Tool, r.Scope}, "\x1f") + argsFingerprint(r.Match.Args)
 }
