@@ -40,6 +40,7 @@ type providerRow struct {
 type toolRow struct {
 	pattern string
 	action  string
+	orig    int // index of the source rule in the original policy, -1 for a new row
 }
 
 type model struct {
@@ -122,9 +123,9 @@ func newModel(opts Options) model {
 	}
 
 	// Tools: only tool-name rules are editable here; host/path rules are preserved on save.
-	for _, r := range opts.Policy.Tools {
+	for i, r := range opts.Policy.Tools {
 		if r.Match.Tool != "" && r.Match.Provider == "" {
-			m.tools = append(m.tools, toolRow{pattern: r.Match.Tool, action: string(orZero(r.Action, "hitl"))})
+			m.tools = append(m.tools, toolRow{pattern: r.Match.Tool, action: string(orZero(r.Action, "hitl")), orig: i})
 		}
 	}
 	return m
@@ -152,7 +153,7 @@ func (m model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		val := strings.TrimSpace(m.input.Value())
 		if val != "" {
 			if m.inputKind == secTools {
-				m.tools = append(m.tools, toolRow{pattern: val, action: "hitl"})
+				m.tools = append(m.tools, toolRow{pattern: val, action: "hitl", orig: -1})
 			} else {
 				m.egress = append(m.egress, val)
 			}
@@ -372,23 +373,38 @@ func (m model) updateDefaults(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// build converts editor state back into a policy, preserving host/path rules from the original.
+// build converts editor state back into a policy. Rules are first-match, so they keep their
+// original order: rules the editor does not manage are kept verbatim, edited tool rules keep every
+// field except the action (args, scope, one_time, taints, ... must not be silently dropped, which
+// would widen the policy), deleted ones are removed and new ones are appended.
 func (m model) build() policy.Policy {
 	p := policy.Policy{
 		Agent:               m.orig.Agent,
-		Egress:              policy.Egress{Allow: m.egress},
+		Egress:              policy.Egress{Allow: m.egress, Passthrough: m.orig.Egress.Passthrough},
 		DefaultAction:       policy.Action(m.defAction),
 		EscalateWhenTainted: m.escalate,
 		Providers:           map[string]policy.ProviderRule{},
 	}
-	// Preserve non-tool, non-provider rules (host/path egress rules).
-	for _, r := range m.orig.Tools {
-		if r.Match.Tool == "" && r.Match.Provider == "" {
+	kept := map[int]toolRow{}
+	for _, t := range m.tools {
+		if t.orig >= 0 {
+			kept[t.orig] = t
+		}
+	}
+	for i, r := range m.orig.Tools {
+		if r.Match.Tool == "" || r.Match.Provider != "" {
+			p.Tools = append(p.Tools, r)
+			continue
+		}
+		if t, ok := kept[i]; ok {
+			r.Action = policy.Action(t.action)
 			p.Tools = append(p.Tools, r)
 		}
 	}
 	for _, t := range m.tools {
-		p.Tools = append(p.Tools, policy.Rule{Match: policy.Match{Tool: t.pattern}, Action: policy.Action(t.action)})
+		if t.orig < 0 {
+			p.Tools = append(p.Tools, policy.Rule{Match: policy.Match{Tool: t.pattern}, Action: policy.Action(t.action)})
+		}
 	}
 	for _, pr := range m.providers {
 		if pr.access == "" && pr.credential == "" && len(selectedScopes(pr)) == 0 {

@@ -76,9 +76,16 @@ func (e *Engine) checkGuard(req Request) (Decision, bool) {
 	return Decision{}, false
 }
 
+// guardMaxDepth bounds how deep the guard walks tool arguments. Anything nested deeper is
+// treated as a hit: an argument the guard cannot inspect must not slip past it.
+const guardMaxDepth = 1000
+
 func (g *guardSet) hits(v reflect.Value, depth int) bool {
-	if depth > 64 || !v.IsValid() {
+	if !v.IsValid() {
 		return false
+	}
+	if depth > guardMaxDepth {
+		return true
 	}
 	switch v.Kind() {
 	case reflect.Interface, reflect.Pointer:

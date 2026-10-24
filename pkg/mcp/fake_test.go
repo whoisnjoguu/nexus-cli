@@ -738,6 +738,19 @@ func readLines(path string) []string {
 	return strings.Split(strings.TrimSpace(string(b)), "\n")
 }
 
+// waitUpstreamCall waits until the fake upstream name has started handling tool.
+func waitUpstreamCall(t *testing.T, dir, name, tool string) {
+	t.Helper()
+	eventually(t, 10*time.Second, name+" handling "+tool, func() bool {
+		for _, l := range readLines(filepath.Join(dir, name+".calls")) {
+			if l == tool {
+				return true
+			}
+		}
+		return false
+	})
+}
+
 func eventually(t *testing.T, d time.Duration, desc string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(d)

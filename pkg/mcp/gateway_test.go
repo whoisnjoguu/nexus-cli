@@ -239,6 +239,7 @@ func TestSlowCallDoesNotBlockAndCancelPropagates(t *testing.T) {
 	default:
 	}
 
+	waitUpstreamCall(t, dir, "a", "slow")
 	g.c.send(map[string]any{"jsonrpc": "2.0", "method": "notifications/cancelled", "params": map[string]any{"requestId": slowID, "reason": "user"}})
 	eventually(t, 10*time.Second, "upstream cancellation", func() bool {
 		for _, l := range readLines(filepath.Join(dir, "a.cancelled")) {
@@ -568,6 +569,9 @@ func TestUpstreamCrashRestart(t *testing.T) {
 	g.initialize(nil)
 
 	_, slowCh := g.c.start("tools/call", map[string]any{"name": "a__slow", "arguments": map[string]any{"ms": 30000}})
+	// The gateway dispatches calls concurrently, so without this the crash can overtake the slow
+	// call, which then fails on a dead pipe or a restarting upstream instead of as a pending call.
+	waitUpstreamCall(t, dir, "a", "slow")
 	start := time.Now()
 	crash := g.callTool("a__crash", map[string]any{})
 	slow := g.c.await(slowCh, 10*time.Second)
