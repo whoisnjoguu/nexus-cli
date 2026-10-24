@@ -111,14 +111,14 @@ func TestPolicyDenyBlocksRequest(t *testing.T) {
 	}
 }
 
-func TestReplayGuardRejectsReusedToken(t *testing.T) {
+func TestReplayGuardRejectsReusedSingleUseConfig(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer upstream.Close()
 
 	signer, _ := jwt.NewTokenSigner()
-	p := New(Config{RequireAuth: true, Verifier: signer.Verifier(), Replay: jwt.NewReplayGuard()})
+	p := New(Config{RequireAuth: true, Verifier: signer.Verifier(), Replay: jwt.NewReplayGuard(), SingleUse: true})
 	tok, _ := signer.MintDualActorToken("agent", "alice", []string{"read"}, time.Minute)
 
 	first, _ := http.NewRequest(http.MethodGet, upstream.URL+"/", nil)
