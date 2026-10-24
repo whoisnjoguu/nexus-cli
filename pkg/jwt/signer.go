@@ -20,6 +20,9 @@ type DualActorClaims struct {
 	// fetch short-lived upstream credentials on the human's behalf
 	ConnID  string `json:"conn_id,omitempty"`
 	Gateway string `json:"gw,omitempty"`
+	// SingleUse asks verifiers to reject any reuse of this token's jti. When false the token is
+	// reusable until it expires.
+	SingleUse bool `json:"single_use,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -88,6 +91,8 @@ type MintOptions struct {
 	ConnID  string
 	Gateway string
 	TTL     time.Duration
+	// SingleUse sets the single_use claim so the proxy enforces one request per token.
+	SingleUse bool
 }
 
 // Mint issues a dual-actor token, optionally binding a broker connection for credential injection.
@@ -98,11 +103,12 @@ func (s *TokenSigner) Mint(o MintOptions) (string, error) {
 		return "", err
 	}
 	claims := DualActorClaims{
-		AgentID: o.AgentID,
-		ActAs:   o.UserID,
-		Scopes:  o.Scopes,
-		ConnID:  o.ConnID,
-		Gateway: o.Gateway,
+		AgentID:   o.AgentID,
+		ActAs:     o.UserID,
+		Scopes:    o.Scopes,
+		ConnID:    o.ConnID,
+		Gateway:   o.Gateway,
+		SingleUse: o.SingleUse,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ID:        jti,
 			Issuer:    "nexus-cli-local",
