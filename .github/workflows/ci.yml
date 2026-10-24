@@ -56,6 +56,29 @@ jobs:
       - name: Run govulncheck
         run: govulncheck ./...
 
+  docker:
+    name: Container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build image
+        run: make docker IMAGE=nexus-cli:ci
+      - name: Smoke test
+        run: |
+          docker run --rm nexus-cli:ci version
+          docker run -d --name nexus --read-only -p 127.0.0.1:8075:8075 nexus-cli:ci
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8075/_nexus/health && break; sleep 1; done
+          curl -fsS http://127.0.0.1:8075/_nexus/health | grep -q '"status":"ok"'
+          code=$(curl -s -o /dev/null -w '%{http_code}' -x http://127.0.0.1:8075 http://example.com/)
+          test "$code" = 401
+          docker exec nexus nexus-cli audit verify
+          docker logs nexus
+          docker rm -f nexus
+
   python-sdk:
     name: Python SDK (${{ matrix.python }}, ${{ matrix.extras }})
     runs-on: ubuntu-latest
