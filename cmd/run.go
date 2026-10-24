@@ -25,6 +25,7 @@ import (
 	"github.com/whoisnjoguu/nexus-cli/pkg/credential"
 	"github.com/whoisnjoguu/nexus-cli/pkg/hitl"
 	"github.com/whoisnjoguu/nexus-cli/pkg/jwt"
+	"github.com/whoisnjoguu/nexus-cli/pkg/notify"
 	"github.com/whoisnjoguu/nexus-cli/pkg/policy"
 	"github.com/whoisnjoguu/nexus-cli/pkg/proxy"
 )
@@ -40,6 +41,7 @@ var (
 	runAttach       string
 	runNoProxy      string
 	runTimeout      time.Duration
+	runNotify       string
 	runNoAudit      bool
 	runKey          string
 	runPrintEnv     bool
@@ -94,6 +96,9 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 	if runTimeout <= 0 {
 		return fmt.Errorf("--approval-timeout must be positive (got %s)", runTimeout)
+	}
+	if _, err := notify.ParseMode(runNotify); err != nil {
+		return err
 	}
 	if runMITM != "auto" && runMITM != "on" && runMITM != "off" {
 		return fmt.Errorf("--mitm must be auto, on or off (got %q)", runMITM)
@@ -286,12 +291,18 @@ func startRunProxy(rt *policyRuntime, signer *jwt.TokenSigner, mitmCA *ca.CA, st
 	if cerr != nil {
 		fmt.Fprintf(stderr, "[nexus] warning: approvals unavailable (%v); calls needing approval will be denied\n", cerr)
 	}
+	stopNotify, nerr := startApprovalNotifier(runNotify, broker, ctl, stderr)
+	if nerr != nil {
+		stopNotify = func() {}
+		fmt.Fprintf(stderr, "[nexus] notifications disabled: %v\n", nerr)
+	}
 	shutdown := func() {
 		rt.Close()
 		cancel()
 		if err := <-served; err != nil {
 			fmt.Fprintf(stderr, "[nexus] proxy shutdown: %v\n", err)
 		}
+		stopNotify()
 		if ctl != nil {
 			_ = ctl.Close()
 		}
@@ -480,6 +491,7 @@ func init() {
 	f.StringVar(&runMITM, "mitm", "auto", "HTTPS interception: auto (on if a CA exists), on (create the CA if needed), off")
 	f.StringVar(&runAttach, "attach", "", "Use a running 'nexus-cli dev' at host:port instead of an in-process proxy")
 	f.StringVar(&runNoProxy, "no-proxy", "localhost,127.0.0.1,::1", "NO_PROXY value for the command")
+	addNotifyFlag(f, &runNotify)
 	f.DurationVar(&runTimeout, "approval-timeout", 120*time.Second, "How long a call waits for 'nexus-cli approve' before it is denied")
 	f.BoolVar(&runNoAudit, "no-audit", false, "Disable the tamper-evident audit log")
 	f.StringVar(&runKey, "key", "", "Path to the persistent Ed25519 key (default $NEXUS_HOME/ed25519.key or ~/.nexus/ed25519.key)")

@@ -15,6 +15,7 @@ import (
 	"github.com/whoisnjoguu/nexus-cli/pkg/credential"
 	"github.com/whoisnjoguu/nexus-cli/pkg/hitl"
 	"github.com/whoisnjoguu/nexus-cli/pkg/jwt"
+	"github.com/whoisnjoguu/nexus-cli/pkg/notify"
 	"github.com/whoisnjoguu/nexus-cli/pkg/policy"
 	"github.com/whoisnjoguu/nexus-cli/pkg/proxy"
 )
@@ -34,6 +35,7 @@ var (
 	devNoReload     bool
 	devAcceptChange bool
 	devEphemeral    bool
+	devNotify       string
 )
 
 var devCmd = &cobra.Command{
@@ -57,6 +59,9 @@ var devCmd = &cobra.Command{
 		stdout, stderr := cmd.OutOrStdout(), cmd.ErrOrStderr()
 		if devTimeout <= 0 {
 			return fmt.Errorf("--approval-timeout must be positive (got %s)", devTimeout)
+		}
+		if _, err := notify.ParseMode(devNotify); err != nil {
+			return err
 		}
 		mitmCA, err := resolveMITM(devMITM)
 		if err != nil {
@@ -164,6 +169,11 @@ var devCmd = &cobra.Command{
 		} else {
 			defer ctl.Close()
 		}
+		stopNotify, nerr := startApprovalNotifier(devNotify, broker, ctl, stderr)
+		if nerr != nil {
+			return nerr
+		}
+		defer stopNotify()
 		if hasTTY {
 			fmt.Fprintln(stdout, "approvals: answer here or run 'nexus-cli approve' in another terminal")
 		} else {
@@ -202,6 +212,7 @@ func init() {
 	devCmd.Flags().BoolVar(&devNoAudit, "no-audit", false, "Disable the tamper-evident audit log")
 	devCmd.Flags().StringVar(&devListen, "listen", "", "Address to bind as host:port (default 127.0.0.1:<port>; non-loopback exposes the proxy to the network)")
 	devCmd.Flags().BoolVar(&devSingle, "single-use", false, "Reject any reuse of a token (default: tokens are reusable until expiry unless minted --single-use)")
+	addNotifyFlag(devCmd.Flags(), &devNotify)
 	devCmd.Flags().DurationVar(&devTimeout, "approval-timeout", 60*time.Second, "How long a call waits for a human decision before it is denied")
 	devCmd.Flags().StringVar(&devMITM, "mitm", "auto", "HTTPS interception: auto (on if a CA exists, see 'nexus-cli ca init'), on (create the CA if needed), off")
 	devCmd.Flags().BoolVar(&devNoReload, "no-reload", false, "Disable policy hot reload (file polling and SIGHUP)")

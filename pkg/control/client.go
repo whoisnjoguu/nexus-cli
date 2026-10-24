@@ -254,3 +254,25 @@ func isConnRefused(err error) bool {
 	var oe *net.OpError
 	return errors.As(err, &oe) && oe.Op == "dial"
 }
+
+// LoginCode mints a one-time web UI login code (valid for LoginCodeTTL); open its URL in a
+// browser to start a UI session.
+func (c *Client) LoginCode(ctx context.Context) (LoginCode, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/v1/ui/login-code", nil)
+	if err != nil {
+		return LoginCode{}, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return LoginCode{}, apiError(resp)
+	}
+	defer drain(resp)
+	var lc LoginCode
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&lc); err != nil {
+		return LoginCode{}, fmt.Errorf("control: decode login code: %w", err)
+	}
+	if lc.Code == "" {
+		return LoginCode{}, errors.New("control: empty login code")
+	}
+	lc.URL = UIURL(c.info.Addr, lc.Code)
+	return lc, nil
+}

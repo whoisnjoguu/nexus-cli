@@ -22,6 +22,7 @@ import (
 	"github.com/whoisnjoguu/nexus-cli/pkg/hitl"
 	"github.com/whoisnjoguu/nexus-cli/pkg/jwt"
 	"github.com/whoisnjoguu/nexus-cli/pkg/mcp"
+	"github.com/whoisnjoguu/nexus-cli/pkg/notify"
 	"github.com/whoisnjoguu/nexus-cli/pkg/policy"
 	"github.com/whoisnjoguu/nexus-cli/pkg/principal"
 )
@@ -39,6 +40,7 @@ var (
 	mcpAlsoStdio       bool
 	mcpCallTimeout     time.Duration
 	mcpApprovalTimeout time.Duration
+	mcpNotify          string
 	mcpNoRestart       bool
 	mcpNoReload        bool
 	mcpEphemeral       bool
@@ -145,6 +147,11 @@ supports it, and in any case queues the request for ` + "`nexus-cli approve`" + 
 		} else {
 			mcfg.Approver = broker
 			defer ctrl.Close()
+			stopNotify, nerr := startApprovalNotifier(mcpNotify, broker, ctrl, os.Stderr)
+			if nerr != nil {
+				return nerr
+			}
+			defer stopNotify()
 		}
 
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -351,13 +358,15 @@ func init() {
 	mcpServeCmd.Flags().StringSliceVar(&mcpHTTPHosts, "http-allowed-host", nil, "Extra Host header names accepted besides loopback (needed for non-loopback binds)")
 	mcpServeCmd.Flags().BoolVar(&mcpAlsoStdio, "stdio", false, "With --http, also serve stdio")
 	mcpServeCmd.Flags().DurationVar(&mcpCallTimeout, "call-timeout", mcp.DefaultCallTimeout, "Timeout for each request forwarded to an upstream server")
+	addNotifyFlag(mcpServeCmd.Flags(), &mcpNotify)
 	mcpServeCmd.Flags().DurationVar(&mcpApprovalTimeout, "approval-timeout", mcp.DefaultApprovalTimeout, "How long to wait for a human approval before denying")
 	mcpServeCmd.Flags().BoolVar(&mcpNoRestart, "no-restart", false, "Do not restart upstream servers that exit")
 	mcpServeCmd.PreRunE = func(cmd *cobra.Command, args []string) error {
 		if mcpAlsoStdio && mcpHTTPAddr == "" {
 			return errNoHTTPForStdio
 		}
-		return nil
+		_, err := notify.ParseMode(mcpNotify)
+		return err
 	}
 
 	mcpCmd.AddCommand(mcpServeCmd)

@@ -146,6 +146,12 @@ var doctorCmd = &cobra.Command{
 			}
 			check(r.pass, r.msg)
 		}
+		for _, r := range doctorServiceChecks() {
+			if !r.pass {
+				ok = false
+			}
+			check(r.pass, r.msg)
+		}
 
 		if !ok {
 			return fmt.Errorf("doctor found issues")

@@ -90,7 +90,7 @@ service shares $NEXUS_HOME with your shell, so 'nexus-cli run --attach <listen>'
 	}
 	fl := install.Flags()
 	fl.StringVar(&f.listen, "listen", service.DefaultListen, "Proxy address host:port (loopback unless --allow-remote)")
-	fl.StringVar(&f.policy, "policy", "nexus.yaml", "Policy file (stored as an absolute path)")
+	fl.StringVar(&f.policy, "policy", "", policyFlagHelp+"; stored as an absolute path")
 	fl.StringVar(&f.mitm, "mitm", "auto", "HTTPS interception: auto, on or off")
 	fl.DurationVar(&f.timeout, "approval-timeout", 60*time.Second, "How long a call waits for a human decision")
 	fl.StringArrayVar(&f.env, "env", nil, "Extra environment KEY=VALUE for the service (KEY alone copies the current value); repeatable")
@@ -278,7 +278,7 @@ func serviceInstall(cmd *cobra.Command, f *serviceFlags, extra []string) error {
 	if err != nil {
 		return fmt.Errorf("locate nexus-cli executable: %w", err)
 	}
-	policyPath, err := filepath.Abs(f.policy)
+	policyPath, err := filepath.Abs(resolvePolicyPath(cmd))
 	if err != nil {
 		return err
 	}
