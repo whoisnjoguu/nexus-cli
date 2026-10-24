@@ -100,6 +100,41 @@ func TestHelperProcess(t *testing.T) {
 			fmt.Printf("%s %d\n", u, resp.StatusCode)
 		}
 		os.Exit(0)
+	case "sdkcheck":
+		// Act as an SDK in the gated child: ask for decisions with the env token, then try to
+		// list and answer approvals with it (which must be refused).
+		base, ctok := os.Getenv("NEXUS_CONTROL_URL"), os.Getenv("NEXUS_CONTROL_TOKEN")
+		pu, _ := url.Parse(os.Getenv("NEXUS_PROXY_URL"))
+		jwtTok, _ := pu.User.Password()
+		do := func(method, path, body string) (int, string) {
+			req, _ := http.NewRequest(method, base+path, strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer "+ctok)
+			if body != "" {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return -1, err.Error()
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			return resp.StatusCode, string(b)
+		}
+		for _, c := range []struct{ name, body string }{
+			{"allowed", `{"method":"GET","host":"example.com","path":"/allowed","token":"` + jwtTok + `"}`},
+			{"denied", `{"method":"GET","host":"example.com","path":"/denied","token":"` + jwtTok + `"}`},
+			{"notoken", `{"method":"GET","host":"example.com","path":"/allowed"}`},
+		} {
+			code, body := do(http.MethodPost, "/v1/check", c.body)
+			var r struct{ Decision string }
+			_ = json.Unmarshal([]byte(body), &r)
+			fmt.Printf("%s=%d/%s\n", c.name, code, r.Decision)
+		}
+		code, _ := do(http.MethodGet, "/v1/approvals", "")
+		fmt.Printf("list=%d\n", code)
+		code, _ = do(http.MethodPost, "/v1/approvals/x", `{"decision":"once"}`)
+		fmt.Printf("decide=%d\n", code)
+		os.Exit(0)
 	case "control":
 		infos, err := control.Discover()
 		if err != nil {
@@ -453,6 +488,19 @@ func TestRunRegistersControlEndpoint(t *testing.T) {
 	}
 	if infos, _ := control.Discover(); len(infos) != 0 {
 		t.Fatalf("control endpoint not removed: %+v", infos)
+	}
+}
+
+func TestRunChildSDKUsesCheckOnlyToken(t *testing.T) {
+	e := newRunEnv(t)
+	if err := e.run([]string{"--mitm", "off", "--no-audit"}, "sdkcheck"); err != nil {
+		t.Fatalf("%v; stderr=%s", err, e.stderr.String())
+	}
+	out := e.stdout.String()
+	for _, want := range []string{"allowed=200/allow", "denied=200/deny", "notoken=200/deny", "list=403", "decide=403"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in child output:\n%s", want, out)
+		}
 	}
 }
 

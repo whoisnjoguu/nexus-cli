@@ -19,6 +19,7 @@ import (
 
 	"github.com/whoisnjoguu/nexus-cli/pkg/audit"
 	"github.com/whoisnjoguu/nexus-cli/pkg/control"
+	"github.com/whoisnjoguu/nexus-cli/pkg/gate"
 	"github.com/whoisnjoguu/nexus-cli/pkg/hitl"
 	"github.com/whoisnjoguu/nexus-cli/pkg/jwt"
 	"github.com/whoisnjoguu/nexus-cli/pkg/mcp"
@@ -147,6 +148,24 @@ supports it, and in any case queues the request for ` + "`nexus-cli approve`" + 
 		} else {
 			mcfg.Approver = broker
 			defer ctrl.Close()
+			// SDK checks (POST /v1/check) share the gateway's engine, so taints, one_time and
+			// session grants apply across MCP tool calls and SDK checks.
+			g, gerr := gate.New(gate.Config{
+				Engine:          mcfg.Engine,
+				Approver:        broker,
+				ApprovalTimeout: mcpApprovalTimeout,
+				Audit:           mcfg.Audit,
+				OnPersistRule:   mcfg.OnPersistRule,
+				Strict:          mcpStrict,
+				AgentID:         mcpAgentID,
+				ActAs:           mcfg.ActAs,
+				Verifier:        signer.Verifier(),
+			})
+			if gerr != nil {
+				fmt.Fprintf(os.Stderr, "[nexus-mcp] note: SDK checks unavailable: %v\n", gerr)
+			} else {
+				ctrl.SetChecker(g)
+			}
 			stopNotify, nerr := startApprovalNotifier(mcpNotify, broker, ctrl, os.Stderr)
 			if nerr != nil {
 				return nerr

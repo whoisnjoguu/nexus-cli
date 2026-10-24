@@ -1,9 +1,11 @@
-// Package sdk lets agents embed nexus-cli's authorization directly, gating every tool call
-// against policy, human approval, and the audit log without running a separate proxy.
+// Package sdk lets agents gate every tool call against nexus-cli's policy, human approval, and
+// the audit log: either by asking a running nexus-cli over its control API (Client, see
+// docs/sdk.md) or in-process without a separate proxy (LocalGate).
 package sdk
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/whoisnjoguu/nexus-cli/pkg/audit"
@@ -21,6 +23,19 @@ type ToolCall struct {
 	Path      string
 	Tool      string
 	Scopes    []string
+	// Args are the tool-call arguments, matched by policy args constraints.
+	Args map[string]any
+}
+
+func (c ToolCall) argsJSON() json.RawMessage {
+	if len(c.Args) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(c.Args)
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 // Decision is the SDK's authorization outcome.
@@ -81,6 +96,7 @@ func (g *LocalGate) Authorize(ctx context.Context, call ToolCall) (Decision, err
 		Path:      call.Path,
 		Tool:      call.Tool,
 		Scopes:    call.Scopes,
+		Args:      call.Args,
 	})
 
 	allowed := false

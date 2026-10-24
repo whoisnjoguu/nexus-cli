@@ -472,7 +472,7 @@ func collectServiceReport(ctx context.Context, name string) (serviceReport, erro
 	if infos, err := serviceDiscover(); err == nil {
 		if ci := service.MatchControl(infos, r.Listen, st.PID); ci != nil {
 			c := *ci
-			c.Token = "" // never print the control bearer token
+			c.Token, c.CheckToken = "", "" // never print the control tokens
 			r.Control = &c
 		}
 	}

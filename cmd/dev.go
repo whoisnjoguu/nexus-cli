@@ -13,6 +13,7 @@ import (
 	"github.com/whoisnjoguu/nexus-cli/pkg/audit"
 	"github.com/whoisnjoguu/nexus-cli/pkg/control"
 	"github.com/whoisnjoguu/nexus-cli/pkg/credential"
+	"github.com/whoisnjoguu/nexus-cli/pkg/gate"
 	"github.com/whoisnjoguu/nexus-cli/pkg/hitl"
 	"github.com/whoisnjoguu/nexus-cli/pkg/jwt"
 	"github.com/whoisnjoguu/nexus-cli/pkg/notify"
@@ -168,6 +169,24 @@ var devCmd = &cobra.Command{
 			fmt.Fprintf(stderr, "⚠️  approvals from other terminals unavailable: %v\n", cerr)
 		} else {
 			defer ctl.Close()
+			// SDK checks (POST /v1/check) share the proxy's engine, approver, audit log and replay
+			// guard; with --require-auth they must carry a valid nexus token.
+			g, gerr := gate.New(gate.Config{
+				Engine:          engine,
+				Approver:        approver,
+				ApprovalTimeout: devTimeout,
+				Audit:           auditlog,
+				OnPersistRule:   cfg.OnPersistRule,
+				Strict:          strictMode,
+				Verifier:        verifier,
+				RequireToken:    requireAuth,
+				Replay:          replay,
+			})
+			if gerr != nil {
+				fmt.Fprintf(stderr, "⚠️  SDK checks unavailable: %v\n", gerr)
+			} else {
+				ctl.SetChecker(g)
+			}
 		}
 		stopNotify, nerr := startApprovalNotifier(devNotify, broker, ctl, stderr)
 		if nerr != nil {

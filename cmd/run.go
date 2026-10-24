@@ -23,6 +23,7 @@ import (
 	"github.com/whoisnjoguu/nexus-cli/pkg/ca"
 	"github.com/whoisnjoguu/nexus-cli/pkg/control"
 	"github.com/whoisnjoguu/nexus-cli/pkg/credential"
+	"github.com/whoisnjoguu/nexus-cli/pkg/gate"
 	"github.com/whoisnjoguu/nexus-cli/pkg/hitl"
 	"github.com/whoisnjoguu/nexus-cli/pkg/jwt"
 	"github.com/whoisnjoguu/nexus-cli/pkg/notify"
@@ -54,7 +55,7 @@ var (
 // caBundleEnv are the variables pointed at the system+nexus CA bundle so common runtimes trust
 // intercepted HTTPS. NODE_EXTRA_CA_CERTS (additive) gets the CA certificate alone.
 var caBundleEnv = []string{
-	"SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "AWS_CA_BUNDLE",
+	"NEXUS_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "AWS_CA_BUNDLE",
 	"PIP_CERT", "CARGO_HTTP_CAINFO", "DENO_CERT", "HEX_CACERTS_PATH",
 }
 
@@ -156,6 +157,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		proxyAddr string
 		mitmCA    *ca.CA
 		shutdown  = func() {}
+		ctlEnv    [][2]string
 	)
 	if runAttach != "" {
 		proxyAddr, mitmCA, err = attachProxy(runAttach, token)
@@ -165,12 +167,13 @@ func runRun(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("mitm") {
 			fmt.Fprintln(stderr, "[nexus] note: --mitm is ignored with --attach; interception follows the attached proxy")
 		}
+		ctlEnv = attachedControlEnv(proxyAddr)
 	} else {
 		mitmCA, err = resolveMITM(runMITM)
 		if err != nil {
 			return err
 		}
-		proxyAddr, shutdown, err = startRunProxy(rt, signer, mitmCA, stderr)
+		proxyAddr, ctlEnv, shutdown, err = startRunProxy(rt, signer, mitmCA, stderr)
 		if err != nil {
 			return err
 		}
@@ -184,6 +187,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	env = append(env, ctlEnv...)
 
 	if runPrintEnv {
 		out := cmd.OutOrStdout()
@@ -220,13 +224,13 @@ func runResolveActor(warn io.Writer) (actAs string, ceiling []string, connID, ga
 
 // startRunProxy serves an authenticated in-process proxy on 127.0.0.1:0 whose approvals go only to
 // the broker (exposed to `nexus-cli approve` via the control API).
-func startRunProxy(rt *policyRuntime, signer *jwt.TokenSigner, mitmCA *ca.CA, stderr io.Writer) (string, func(), error) {
+func startRunProxy(rt *policyRuntime, signer *jwt.TokenSigner, mitmCA *ca.CA, stderr io.Writer) (string, [][2]string, func(), error) {
 	pol := rt.Policy
 	var auditlog *audit.Logger
 	if !runNoAudit {
 		var err error
 		if auditlog, _, err = rt.openAudit(); err != nil {
-			return "", nil, err
+			return "", nil, nil, err
 		}
 	}
 	replay, err := rt.persistState(runEphemeral)
@@ -234,7 +238,7 @@ func startRunProxy(rt *policyRuntime, signer *jwt.TokenSigner, mitmCA *ca.CA, st
 		if auditlog != nil {
 			_ = auditlog.Close()
 		}
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	if !runNoReload {
 		// SIGHUP is relayed to the child by runChild, so only file changes trigger a reload.
@@ -253,6 +257,11 @@ func startRunProxy(rt *policyRuntime, signer *jwt.TokenSigner, mitmCA *ca.CA, st
 	})
 
 	policyPath := rt.Path
+	persist := func(rule policy.Rule) {
+		if err := appendPolicyRule(policyPath, rule); err != nil {
+			fmt.Fprintf(stderr, "[nexus] note: could not persist rule to %s: %v\n", policyPath, err)
+		}
+	}
 	server := proxy.New(proxy.Config{
 		Listen:            "127.0.0.1:0",
 		Strict:            runStrict,
@@ -267,11 +276,7 @@ func startRunProxy(rt *policyRuntime, signer *jwt.TokenSigner, mitmCA *ca.CA, st
 		MITM:              mitmCA,
 		Passthrough:       pol.Egress.Passthrough,
 		UpstreamTransport: upstreamTransportHook,
-		OnPersistRule: func(rule policy.Rule) {
-			if err := appendPolicyRule(policyPath, rule); err != nil {
-				fmt.Fprintf(stderr, "[nexus] note: could not persist rule to %s: %v\n", policyPath, err)
-			}
-		},
+		OnPersistRule:     persist,
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -279,7 +284,7 @@ func startRunProxy(rt *policyRuntime, signer *jwt.TokenSigner, mitmCA *ca.CA, st
 		if auditlog != nil {
 			_ = auditlog.Close()
 		}
-		return "", nil, fmt.Errorf("listen: %w", err)
+		return "", nil, nil, fmt.Errorf("listen: %w", err)
 	}
 	addr := ln.Addr().String()
 
@@ -287,9 +292,30 @@ func startRunProxy(rt *policyRuntime, signer *jwt.TokenSigner, mitmCA *ca.CA, st
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(ctx, ln) }()
 
+	var ctlEnv [][2]string
 	ctl, cerr := control.Start(broker, control.Info{Kind: "run", Listen: addr, Policy: absPath(policyPath)})
 	if cerr != nil {
 		fmt.Fprintf(stderr, "[nexus] warning: approvals unavailable (%v); calls needing approval will be denied\n", cerr)
+	} else {
+		// SDK checks (POST /v1/check) share this proxy's engine, approver, audit log and replay
+		// guard. The child must present its token (NEXUS_PROXY_URL), as it must to the proxy.
+		g, gerr := gate.New(gate.Config{
+			Engine:          rt.Engine,
+			Approver:        approver,
+			ApprovalTimeout: runTimeout,
+			Audit:           auditlog,
+			OnPersistRule:   persist,
+			Strict:          runStrict,
+			Verifier:        signer.Verifier(),
+			RequireToken:    true,
+			Replay:          replay,
+		})
+		if gerr != nil {
+			fmt.Fprintf(stderr, "[nexus] warning: SDK checks unavailable: %v\n", gerr)
+		} else {
+			ctl.SetChecker(g)
+			ctlEnv = controlEnv(ctl.Info())
+		}
 	}
 	stopNotify, nerr := startApprovalNotifier(runNotify, broker, ctl, stderr)
 	if nerr != nil {
@@ -312,7 +338,34 @@ func startRunProxy(rt *policyRuntime, signer *jwt.TokenSigner, mitmCA *ca.CA, st
 			}
 		}
 	}
-	return addr, shutdown, nil
+	return addr, ctlEnv, shutdown, nil
+}
+
+// controlEnv points the SDKs in the child at a control endpoint (see docs/sdk.md). It hands over
+// the check-only token: the child can ask for decisions but cannot answer approvals.
+func controlEnv(info control.Info) [][2]string {
+	if info.CheckToken == "" {
+		return nil
+	}
+	return [][2]string{
+		{"NEXUS_CONTROL_URL", "http://" + info.Addr},
+		{"NEXUS_CONTROL_TOKEN", info.CheckToken},
+	}
+}
+
+// attachedControlEnv finds the control endpoint of the attached `nexus-cli dev` (matched by its
+// proxy listen address), if it is discoverable.
+func attachedControlEnv(proxyAddr string) [][2]string {
+	live, err := control.Discover()
+	if err != nil {
+		return nil
+	}
+	for i := len(live) - 1; i >= 0; i-- { // newest first
+		if live[i].Listen == proxyAddr {
+			return controlEnv(live[i])
+		}
+	}
+	return nil
 }
 
 // attachProxy verifies a running `nexus-cli dev` via its health endpoint (including that it

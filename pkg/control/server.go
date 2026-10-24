@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -57,6 +58,8 @@ type Server struct {
 	closeErr  error
 	serveDone chan struct{}
 	closing   chan struct{} // releases long-polls on Close
+
+	checks checkState // POST /v1/check (see SetChecker)
 }
 
 // Start serves the control API for b on 127.0.0.1 with a fresh random token and writes the
@@ -73,6 +76,10 @@ func Start(b *hitl.Broker, info Info) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	checkToken, err := randHex(32)
+	if err != nil {
+		return nil, err
+	}
 	suffix, err := randHex(4)
 	if err != nil {
 		return nil, err
@@ -85,6 +92,7 @@ func Start(b *hitl.Broker, info Info) (*Server, error) {
 	info.PID = os.Getpid()
 	info.Addr = ln.Addr().String()
 	info.Token = token
+	info.CheckToken = checkToken
 	info.Started = time.Now().UTC()
 	if info.CWD == "" {
 		info.CWD, _ = os.Getwd()
@@ -194,6 +202,8 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /v1/approvals", s.handleList)
 	mux.HandleFunc("POST /v1/approvals/{id}", s.handleDecide)
 	s.registerUI(mux)
+	mux.HandleFunc("POST /v1/check", s.handleCheck)
+	mux.HandleFunc("GET /v1/check/{id}", s.handleCheckPoll)
 	return s.guard(mux)
 }
 
@@ -202,6 +212,7 @@ func (s *Server) handler() http.Handler {
 // (see guardBrowser).
 func (s *Server) guard(next http.Handler) http.Handler {
 	want := []byte("Bearer " + s.info.Token)
+	wantCheck := []byte("Bearer " + s.info.CheckToken)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setSecurityHeaders(w)
 		if _, ok := r.Header["Authorization"]; !ok {
@@ -216,7 +227,16 @@ func (s *Server) guard(next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, "cross-origin requests are not allowed")
 			return
 		}
-		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) != 1 {
+		got := []byte(r.Header.Get("Authorization"))
+		if subtle.ConstantTimeCompare(got, wantCheck) == 1 {
+			if !isCheckRoute(r) {
+				writeError(w, http.StatusForbidden, "the check token only authorizes /v1/check and /v1/status")
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(withAuth(r.Context(), authInfo{kind: authCheck})))
+			return
+		}
+		if subtle.ConstantTimeCompare(got, want) != 1 {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="nexus-control"`)
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
@@ -227,7 +247,7 @@ func (s *Server) guard(next http.Handler) http.Handler {
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	st := Status{Info: s.info, Pending: len(s.broker.Pending())}
-	st.Token = ""
+	st.Token, st.CheckToken = "", ""
 	writeJSON(w, http.StatusOK, st)
 }
 
@@ -320,4 +340,18 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func writeError(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+// isCheckRoute reports whether r targets the decision API or the (token-free) status, the only
+// routes the check token may use.
+func isCheckRoute(r *http.Request) bool {
+	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/status":
+		return true
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/check":
+		return true
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/check/") && !strings.Contains(r.URL.Path[len("/v1/check/"):], "/"):
+		return true
+	}
+	return false
 }

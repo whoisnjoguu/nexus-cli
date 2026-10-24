@@ -57,8 +57,19 @@ jobs:
         run: govulncheck ./...
 
   python-sdk:
-    name: Python SDK
+    name: Python SDK (${{ matrix.python }}, ${{ matrix.extras }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Oldest supported Python with the stdlib-only core (httpx/requests tests skip).
+          - python: "3.9"
+            extras: core
+            install: pip install -e . "pytest>=7"
+          - python: "3.12"
+            extras: all
+            install: pip install -e ".[dev,all]"
     defaults:
       run:
         working-directory: sdk/python
@@ -66,8 +77,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
       - name: Install
-        run: pip install -e ".[dev]"
+        run: ${{ matrix.install }}
       - name: Test
-        run: pytest -q
+        run: pytest -q -rs

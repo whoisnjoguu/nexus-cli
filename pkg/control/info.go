@@ -15,14 +15,18 @@ import (
 
 // Info describes a running control endpoint; it is the content of the discovery file.
 type Info struct {
-	PID     int       `json:"pid"`
-	Addr    string    `json:"addr"`            // host:port of the control API (always 127.0.0.1)
-	Token   string    `json:"token,omitempty"` // bearer token; omitted from /v1/status
-	Kind    string    `json:"kind"`            // dev | run | mcp
-	Started time.Time `json:"started"`
-	Listen  string    `json:"listen,omitempty"` // the proxy's own listen address
-	Policy  string    `json:"policy,omitempty"`
-	CWD     string    `json:"cwd,omitempty"`
+	PID   int    `json:"pid"`
+	Addr  string `json:"addr"`            // host:port of the control API (always 127.0.0.1)
+	Token string `json:"token,omitempty"` // bearer token; omitted from /v1/status
+	// CheckToken authorizes only POST /v1/check, GET /v1/check/{id} and GET /v1/status. It is the token handed
+	// to gated children (NEXUS_CONTROL_TOKEN) so an agent can ask for decisions but never answer
+	// approvals.
+	CheckToken string    `json:"check_token,omitempty"`
+	Kind       string    `json:"kind"` // dev | run | mcp
+	Started    time.Time `json:"started"`
+	Listen     string    `json:"listen,omitempty"` // the proxy's own listen address
+	Policy     string    `json:"policy,omitempty"`
+	CWD        string    `json:"cwd,omitempty"`
 }
 
 // Status is the response of GET /v1/status.

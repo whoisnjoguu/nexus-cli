@@ -198,6 +198,7 @@ const (
 	authNone authKind = iota
 	authBearer
 	authCookie
+	authCheck // the check-only token (see Info.CheckToken)
 )
 
 type authCtxKey struct{}
@@ -401,7 +402,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) uiState() UIState {
 	pending, version, _ := s.broker.Watch()
 	info := s.info
-	info.Token = ""
+	info.Token, info.CheckToken = "", ""
 	return UIState{
 		Version:   version,
 		Now:       time.Now().UTC(),

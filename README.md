@@ -615,9 +615,48 @@ that detectable. See [docs/audit.md](docs/audit.md).
 
 ## Embed in your agent (SDKs)
 
+The SDKs ask a running `nexus-cli dev`, `run` or `mcp serve` over its loopback control API
+(`POST /v1/check`). Each check goes through that process's policy engine, taint tracking,
+`one_time` rules, session grants, human-in-the-loop approval (terminal or `nexus-cli approve`) and
+audit log, so in-process tool calls get the same treatment as proxied traffic. Inside
+`nexus-cli run` the SDKs find the daemon via `NEXUS_CONTROL_URL`/`NEXUS_CONTROL_TOKEN`; otherwise
+they use the newest live `$NEXUS_HOME/control/*.json`. See [docs/sdk.md](docs/sdk.md) for the API,
+discovery and the threat model.
+
+### Python
+
+```python
+import nexus
+
+nx = nexus.Client()  # discovers the running nexus-cli
+d = nx.check(tool="fs__write", args={"path": "/etc/passwd"})
+print(d.decision, d.reason, d.rule, d.source)
+nx.require(tool="shell__exec", args={"cmd": "ls"})  # raises nexus.DeniedError
+
+@nexus.guard(tool="fs__write", args_from=["path"])  # sync or async functions
+def write_file(path: str, content: str) -> None:
+    ...
+
+session = nexus.requests_session()  # routed through the nexus proxy, trusting its CA
+```
+
+The core is standard-library only, and it has an `AsyncClient`. Without a daemon,
+`PolicyGate`/`guard` fall back to `nexus-cli policy test` (`mode="auto"|"daemon"|"subprocess"`).
+See [sdk/python/README.md](sdk/python/README.md).
+
 ### Go
 
-Gate tool calls in-process — no proxy required:
+Ask the running daemon:
+
+```go
+c, err := sdk.Connect(sdk.ConnectOptions{}) // NEXUS_CONTROL_URL or discovery files
+if err != nil { return err }
+if err := c.Require(ctx, sdk.CheckRequest{Tool: "fs__write", Args: json.RawMessage(`{"path":"/tmp/x"}`)}); err != nil {
+    return err // *sdk.DeniedError
+}
+```
+
+Or gate tool calls in-process, with no daemon:
 
 ```go
 engine := policy.NewEngine(pol)
@@ -631,25 +670,11 @@ dec, _ := gate.Authorize(ctx, sdk.ToolCall{
 if !dec.Allowed { return fmt.Errorf("denied: %s", dec.Reason) }
 ```
 
-Or drop a gating transport into any `http.Client`:
+Either gate (`*sdk.Client` or `LocalGate`) can back a gating transport for any `http.Client`:
 
 ```go
 client := &http.Client{Transport: &sdk.GateTransport{Gate: gate, Tokens: src, Agent: "agent-x", ActAs: "alice@company.com"}}
 ```
-
-### Python
-
-```python
-from nexus import PolicyGate, guard, DeniedError
-
-gate = PolicyGate()   # uses ./nexus.yaml and the nexus-cli binary
-
-@guard(gate, tool="execute_shell")
-def execute_shell(cmd: str) -> str:
-    ...
-```
-
-See [sdk/python/README.md](sdk/python/README.md).
 
 ## IDE Integration
 
@@ -746,7 +771,8 @@ nexus-cli/
 │   ├── audit/           # hash-chained, tamper-evident decision log
 │   ├── credential/      # broker credential resolver (nexus-framework SDK)
 │   ├── ca/              # local CA + per-host leaf certificates for HTTPS interception
-│   ├── control/         # loopback control API + approvals web UI used by `nexus-cli approve`
+│   ├── control/         # loopback control API: `nexus-cli approve`, approvals web UI, SDK decisions (/v1/check)
+│   ├── gate/            # shared decision pipeline: policy → HITL → one_time/persist → audit
 │   ├── hitl/            # approval broker, terminal prompt, first-answer-wins fan-out
 │   ├── jwt/             # Ed25519 signing, verification, keystore, replay guard, JWKS
 │   ├── mcp/             # MCP stdio server + upstream gateway + broker-access tools
@@ -755,9 +781,10 @@ nexus-cli/
 │   ├── state/           # expiring JSON state store under $NEXUS_HOME/state
 │   ├── principal/       # human identity + multi-provider connections via the Gateway
 │   ├── proxy/           # forward proxy, auth, CONNECT tunnelling + TLS interception
-│   ├── service/         # per-user service managers (systemd, launchd, Task Scheduler)
-│   └── sdk/             # embeddable Go gate + gating http.RoundTripper
-├── sdk/python/          # Python SDK
+│   └── service/         # per-user service managers (systemd, launchd, Task Scheduler)
+├── sdk/
+│   ├── go/              # Go SDK: daemon Client, in-process gate, gating http.RoundTripper
+│   └── python/          # Python SDK (nexus-agent-sdk)
 ├── Dockerfile           # distroless sidecar image
 ├── .goreleaser.yaml     # release / Homebrew / Docker config
 ├── go.mod
