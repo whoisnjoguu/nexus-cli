@@ -83,6 +83,7 @@ var doctorCmd = &cobra.Command{
 			}
 		}
 
+		doctorPolicy = resolvePolicyPath(cmd)
 		if _, serr := os.Stat(doctorPolicy); serr != nil {
 			check(false, "no policy file at "+doctorPolicy+" (run: nexus-cli init) — the safe-tier default policy applies")
 		} else if issues, lerr := lintPolicyFile(doctorPolicy); lerr != nil {
@@ -99,6 +100,21 @@ var doctorCmd = &cobra.Command{
 					msg += " — run: nexus-cli policy lint"
 				}
 				check(true, msg+")")
+			}
+			pinFile, _ := policy.PinPath()
+			if data, rerr := os.ReadFile(doctorPolicy); rerr == nil && pinFile != "" {
+				switch pinned, perr := policy.CheckPin(pinFile, doctorPolicy, data); {
+				case perr != nil:
+					ok = false
+					check(false, perr.Error())
+				case pinned:
+					check(true, "policy matches its pin ("+pinFile+")")
+				default:
+					check(true, "policy not pinned (optional: nexus-cli policy pin)")
+				}
+			}
+			if insideWorkspace(doctorPolicy) {
+				check(false, "policy "+displayPath(doctorPolicy)+" is inside the current directory (an agent's workspace could edit it) — consider: nexus-cli policy protect")
 			}
 		}
 
@@ -138,6 +154,6 @@ func check(pass bool, msg string) {
 }
 
 func init() {
-	doctorCmd.Flags().StringVar(&doctorPolicy, "policy", "nexus.yaml", "Path to the policy file")
+	doctorCmd.Flags().StringVar(&doctorPolicy, "policy", "nexus.yaml", policyFlagHelp)
 	rootCmd.AddCommand(doctorCmd)
 }

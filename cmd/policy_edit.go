@@ -24,6 +24,7 @@ var policyEditCmd = &cobra.Command{
 	Use:   "edit",
 	Short: "Interactively edit the policy (providers, tools, egress, defaults) and write nexus.yaml",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		peFile = resolvePolicyPath(cmd)
 		cfg, _, err := loadConfig(peFile)
 		if err != nil {
 			return err
@@ -68,13 +69,38 @@ func writeConfig(path string, cfg configFile) error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 	header := "# Managed by `nexus-cli policy edit`. Hand edits are preserved on next open,\n# but inline comments are not.\n"
-	// Atomic replace: a hot-reloading proxy never reads a half-written file. Keeps the file's
-	// mode (0600 for a new file).
-	return atomicfile.Write(path, append([]byte(header), data...), 0)
+	return writePolicyBytes(path, append([]byte(header), data...))
+}
+
+// writePolicyBytes atomically replaces a policy file (a hot-reloading proxy never reads a
+// half-written file; the file's mode is kept, 0600 for a new file). Writes come from a human
+// (TUI edit, approval "always allow"), so a pinned file is re-pinned: the pin is updated first,
+// so a watcher never sees the new content with the old pin, and restored if the write fails.
+func writePolicyBytes(path string, data []byte) error {
+	pinFile, err := policy.PinPath()
+	if err != nil {
+		return err
+	}
+	old, pinned, err := policy.ReadPin(pinFile, path)
+	if err != nil {
+		return fmt.Errorf("read policy pin: %w", err)
+	}
+	if pinned {
+		if err := policy.WritePin(pinFile, path, policy.Sum(data)); err != nil {
+			return fmt.Errorf("re-pin policy: %w", err)
+		}
+	}
+	if err := atomicfile.Write(path, data, 0); err != nil {
+		if pinned {
+			_ = policy.WritePin(pinFile, path, old)
+		}
+		return err
+	}
+	return nil
 }
 
 func init() {
-	policyEditCmd.Flags().StringVar(&peFile, "policy", "nexus.yaml", "Path to the policy file")
+	policyEditCmd.Flags().StringVar(&peFile, "policy", "nexus.yaml", policyFlagHelp)
 	policyEditCmd.Flags().StringVar(&peGateway, "gateway", "", "Gateway URL for the provider catalog (or NEXUS_GATEWAY_URL / session)")
 	policyCmd.AddCommand(policyEditCmd)
 }

@@ -30,21 +30,22 @@ import (
 )
 
 var (
-	runAgentID  string
-	runScopes   string
-	runTTL      time.Duration
-	runPolicy   string
-	runStrict   bool
-	runInject   bool
-	runMITM     string
-	runAttach   string
-	runNoProxy  string
-	runTimeout  time.Duration
-	runNoAudit  bool
-	runKey      string
-	runPrintEnv bool
-	runUserID   string
-	runNoReload bool
+	runAgentID      string
+	runScopes       string
+	runTTL          time.Duration
+	runPolicy       string
+	runStrict       bool
+	runInject       bool
+	runMITM         string
+	runAttach       string
+	runNoProxy      string
+	runTimeout      time.Duration
+	runNoAudit      bool
+	runKey          string
+	runPrintEnv     bool
+	runUserID       string
+	runNoReload     bool
+	runAcceptChange bool
 )
 
 // caBundleEnv are the variables pointed at the system+nexus CA bundle so common runtimes trust
@@ -97,11 +98,14 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--mitm must be auto, on or off (got %q)", runMITM)
 	}
 
-	rt, err := loadPolicyRuntime(runPolicy)
+	rt, err := loadPolicyRuntime(resolvePolicyPath(cmd), runtimeOptions{AcceptPolicyChange: runAcceptChange, NoAudit: runNoAudit})
 	if err != nil {
 		return err
 	}
 	defer rt.Close()
+	if runAttach == "" {
+		warnPolicyInWorkspace(cmd.ErrOrStderr(), rt.Path)
+	}
 	pol, polExists := rt.Policy, rt.Exists
 
 	agent := runAgentID
@@ -258,6 +262,7 @@ func startRunProxy(rt *policyRuntime, signer *jwt.TokenSigner, mitmCA *ca.CA, st
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
+		rt.Close()
 		if auditlog != nil {
 			_ = auditlog.Close()
 		}
@@ -461,7 +466,7 @@ func init() {
 	f.StringVarP(&runAgentID, "agent-id", "a", "", "Agent ID for the token (default: the command's base name)")
 	f.StringVarP(&runScopes, "scopes", "s", "", "Comma-separated scopes (default: every scope required by the policy, capped by your login ceiling)")
 	f.DurationVar(&runTTL, "ttl", 12*time.Hour, "Token lifetime, i.e. the maximum run duration")
-	f.StringVar(&runPolicy, "policy", "nexus.yaml", "Path to the policy file (falls back to the safe-tier default)")
+	f.StringVar(&runPolicy, "policy", "nexus.yaml", policyFlagHelp+" (falls back to the safe-tier default)")
 	f.BoolVar(&runStrict, "strict", false, "Require approval for every call, including ones the policy allows")
 	f.BoolVar(&runInject, "inject", false, "Inject broker-issued upstream credentials for rules marked inject: true")
 	f.StringVar(&runMITM, "mitm", "auto", "HTTPS interception: auto (on if a CA exists), on (create the CA if needed), off")
@@ -472,6 +477,7 @@ func init() {
 	f.StringVar(&runKey, "key", "", "Path to the persistent Ed25519 key (default $NEXUS_HOME/ed25519.key or ~/.nexus/ed25519.key)")
 	f.BoolVar(&runPrintEnv, "print-env", false, "With --attach: print 'export' lines for eval instead of running a command")
 	f.BoolVar(&runNoReload, "no-reload", false, "Disable policy hot reload")
+	f.BoolVar(&runAcceptChange, "accept-policy-change", false, "Accept (and re-pin) a policy whose sha256 differs from $NEXUS_HOME/policy.pin")
 	f.StringVarP(&runUserID, "user-id", "u", "", "Human principal fallback when not logged in")
 	rootCmd.AddCommand(runCmd)
 }

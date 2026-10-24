@@ -27,7 +27,7 @@ without a host, ...) make dev/run/mcp refuse to load the file. Warnings flag rul
 probably don't do what you meant (never-matching, unreachable, overly broad). Exits 1 on errors,
 or on warnings too with --strict-warnings.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		path := plFile
+		path := resolvePolicyPath(cmd)
 		out := cmd.OutOrStdout()
 		issues, err := lintPolicyFile(path)
 		if err != nil {
@@ -81,7 +81,7 @@ func lintPolicyFile(path string) ([]policy.Issue, error) {
 }
 
 func init() {
-	policyLintCmd.Flags().StringVar(&plFile, "policy", "nexus.yaml", "Path to the policy file")
+	policyLintCmd.Flags().StringVar(&plFile, "policy", "nexus.yaml", policyFlagHelp)
 	policyLintCmd.Flags().BoolVar(&plJSON, "json", false, "Print issues as JSON")
 	policyLintCmd.Flags().BoolVar(&plStrict, "strict-warnings", false, "Exit 1 on warnings as well as errors")
 	policyCmd.AddCommand(policyLintCmd)

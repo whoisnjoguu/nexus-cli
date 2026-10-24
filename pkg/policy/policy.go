@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -91,6 +92,8 @@ type Decision struct {
 	Reason string
 	// TaintEscalated is set when taint tracking raised an otherwise-allowed call to HITL.
 	TaintEscalated bool
+	// Source is "guard" when the built-in protected-path guard decided (see SetProtectedPaths).
+	Source string
 }
 
 // Allowed reports whether the decision permits execution without further interaction.
@@ -115,6 +118,8 @@ type Engine struct {
 	sessions  map[string]*sessionState
 	lastSweep time.Time
 	now       func() time.Time
+
+	guard atomic.Pointer[guardSet]
 }
 
 // NewEngine builds an evaluator around a policy, applying sane defaults.
@@ -257,6 +262,9 @@ func (e *Engine) ProviderScopes(provider string) []string {
 
 // Evaluate authorizes a request, mutating session state (taint, one-time consumption) as a side effect.
 func (e *Engine) Evaluate(req Request) Decision {
+	if dec, ok := e.checkGuard(req); ok {
+		return dec
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
