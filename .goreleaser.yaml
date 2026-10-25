@@ -35,6 +35,32 @@ archives:
       - goos: windows
         formats: [zip]
 
+# Multi-arch sidecar image on GHCR, built from the linux binaries above (see Dockerfile).
+dockers_v2:
+  - id: nexus-cli
+    ids: [nexus-cli]
+    dockerfile: Dockerfile
+    images:
+      - "ghcr.io/whoisnjoguu/nexus-cli"
+    tags:
+      - "{{ .Tag }}"
+      - "{{ if not .Prerelease }}latest{{ end }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      "org.opencontainers.image.title": "{{ .ProjectName }}"
+      "org.opencontainers.image.description": "Zero-trust security sidecar, identity broker, and MCP gateway for autonomous agents"
+      "org.opencontainers.image.source": "https://github.com/whoisnjoguu/nexus-cli"
+      "org.opencontainers.image.licenses": "MIT"
+      "org.opencontainers.image.version": "{{ .Version }}"
+      "org.opencontainers.image.revision": "{{ .FullCommit }}"
+      "org.opencontainers.image.created": "{{ .Date }}"
+    annotations:
+      "{{ if not .IsSnapshot }}index,{{ end }}manifest:org.opencontainers.image.description": "Zero-trust security sidecar, identity broker, and MCP gateway for autonomous agents"
+      "{{ if not .IsSnapshot }}index,{{ end }}manifest:org.opencontainers.image.source": "https://github.com/whoisnjoguu/nexus-cli"
+      "{{ if not .IsSnapshot }}index,{{ end }}manifest:org.opencontainers.image.licenses": "MIT"
+
 checksum:
   name_template: "checksums.txt"
 

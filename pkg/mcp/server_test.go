@@ -93,7 +93,7 @@ func (h *harness) initialize(withElicitation bool) {
 	}
 	h.send(map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "initialize",
-		"params": map[string]any{"protocolVersion": protocolVersion, "capabilities": caps},
+		"params": map[string]any{"protocolVersion": LatestProtocolVersion, "capabilities": caps},
 	})
 	resp := h.recv()
 	if _, ok := resp["result"]; !ok {

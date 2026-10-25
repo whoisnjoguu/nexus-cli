@@ -1,13 +1,27 @@
 # Build output
 /nexus-cli
+/.docker/
 
 # Go
 *.test
 *.out
 coverage.*
 
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+dist/
+build/
+
 # Local secrets / keys (also lives in ~/.nexus by default)
 *.key
+*.pem
+
+# Local scratch notes
+notes.txt
 
 # Editor / OS
 .DS_Store

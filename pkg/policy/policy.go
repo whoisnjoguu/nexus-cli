@@ -3,10 +3,12 @@ package policy
 
 import (
 	"fmt"
+	"net"
 	"os"
-	"path/filepath"
+	"path"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -28,6 +30,8 @@ type Match struct {
 	Path     string `yaml:"path"`
 	Tool     string `yaml:"tool"`
 	Provider string `yaml:"provider"`
+	// Args constrains tool rules by call arguments (see argsMatch); ignored without Tool/Provider.
+	Args map[string]string `yaml:"args,omitempty"`
 }
 
 // Rule binds a match to an action and the scope required to exercise it.
@@ -45,6 +49,9 @@ type Rule struct {
 // Egress constrains which hosts an agent may reach at all.
 type Egress struct {
 	Allow []string `yaml:"allow"`
+	// Passthrough lists host patterns whose HTTPS traffic is tunnelled without TLS interception
+	// (e.g. certificate-pinned clients); only the host-level CONNECT decision applies to them.
+	Passthrough []string `yaml:"passthrough,omitempty"`
 }
 
 // Policy is the full ruleset loaded from nexus.yaml.
@@ -76,6 +83,7 @@ type Request struct {
 	Tool      string
 	Provider  string
 	Scopes    []string
+	Args      map[string]any // tool-call arguments, matched by Match.Args
 }
 
 // Decision is the outcome of evaluating a request.
@@ -85,6 +93,8 @@ type Decision struct {
 	Reason string
 	// TaintEscalated is set when taint tracking raised an otherwise-allowed call to HITL.
 	TaintEscalated bool
+	// Source is "guard" when the built-in protected-path guard decided (see SetProtectedPaths).
+	Source string
 }
 
 // Allowed reports whether the decision permits execution without further interaction.
@@ -99,6 +109,9 @@ type sessionState struct {
 	consumed map[string]bool // ruleFingerprint -> used (one_time)
 	granted  map[string]bool // grantKey -> grant also covers taint escalation
 	lastSeen time.Time
+
+	persisted int       // len(tainted)+len(consumed) at the last StateStore save
+	savedAt   time.Time // time of the last StateStore save
 }
 
 // Engine evaluates requests against a policy while tracking per-session taint and one-time use.
@@ -109,6 +122,9 @@ type Engine struct {
 	sessions  map[string]*sessionState
 	lastSweep time.Time
 	now       func() time.Time
+
+	guard atomic.Pointer[guardSet]
+	store StateStore // optional; see SetStateStore
 }
 
 // NewEngine builds an evaluator around a policy, applying sane defaults.
@@ -142,6 +158,7 @@ func (e *Engine) sessionLocked(id string) *sessionState {
 			granted:  make(map[string]bool),
 		}
 		e.sessions[id] = s
+		e.hydrateLocked(id, s)
 	}
 	s.lastSeen = now
 	return s
@@ -164,6 +181,14 @@ func (e *Engine) GrantSession(req Request, dec Decision) {
 	s := e.sessionLocked(req.SessionID)
 	key := GrantKey(req)
 	s.granted[key] = s.granted[key] || dec.TaintEscalated
+}
+
+// SessionGranted reports whether a human already approved this shape of call for the session.
+func (e *Engine) SessionGranted(req Request) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_, ok := e.sessionLocked(req.SessionID).granted[GrantKey(req)]
+	return ok
 }
 
 // PersistedAllow builds the "always allow" rule for a match, inheriting the constraints of the
@@ -204,12 +229,23 @@ func DefaultPolicy() Policy {
 		DefaultAction:       ActionHITL,
 		EscalateWhenTainted: true,
 		Tools: []Rule{
+			// An MCP server asking the host LLM to generate text is a prompt-injection vector.
+			{Match: Match{Tool: "sampling/createMessage"}, Action: ActionHITL},
+			// MCP resource reads and prompt templates are read-only ("*" globs stop at "/").
+			{Match: Match{Tool: "resources/read"}, Action: ActionAllow},
+			{Match: Match{Tool: "prompts/get"}, Action: ActionAllow},
 			{Match: Match{Tool: "execute_shell"}, Action: ActionDeny},
 			{Match: Match{Tool: "*delete*"}, Action: ActionHITL},
-			{Match: Match{Tool: "*read*"}, Action: ActionAllow},
-			{Match: Match{Tool: "*list*"}, Action: ActionAllow},
-			{Match: Match{Tool: "*search*"}, Action: ActionAllow},
-			{Match: Match{Tool: "*get*"}, Action: ActionAllow},
+			// Read-only verbs, anchored at a word start ("read_file", "fs__read_file") so that
+			// "forget_password" or "thread_reply" don't ride along on a substring match.
+			{Match: Match{Tool: "read_*"}, Action: ActionAllow},
+			{Match: Match{Tool: "*__read_*"}, Action: ActionAllow},
+			{Match: Match{Tool: "list_*"}, Action: ActionAllow},
+			{Match: Match{Tool: "*__list_*"}, Action: ActionAllow},
+			{Match: Match{Tool: "search_*"}, Action: ActionAllow},
+			{Match: Match{Tool: "*__search_*"}, Action: ActionAllow},
+			{Match: Match{Tool: "get_*"}, Action: ActionAllow},
+			{Match: Match{Tool: "*__get_*"}, Action: ActionAllow},
 			{Match: Match{Method: "GET"}, Action: ActionAllow},
 			{Match: Match{Method: "HEAD"}, Action: ActionAllow},
 		},
@@ -217,20 +253,30 @@ func DefaultPolicy() Policy {
 }
 
 // Policy returns the underlying ruleset.
-func (e *Engine) Policy() Policy { return e.policy }
+func (e *Engine) Policy() Policy {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.policy
+}
 
 // ProviderScopes returns the OAuth scopes configured for a provider, if any.
 func (e *Engine) ProviderScopes(provider string) []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	return e.policy.Providers[provider].Scopes
 }
 
 // Evaluate authorizes a request, mutating session state (taint, one-time consumption) as a side effect.
 func (e *Engine) Evaluate(req Request) Decision {
+	if dec, ok := e.checkGuard(req); ok {
+		return dec
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	s := e.sessionLocked(req.SessionID)
 	dec := e.evaluateLocked(s, req)
+	e.persistLocked(req.SessionID, s)
 
 	// A session grant only answers a prompt the human already answered; deny/scope/one-time still win.
 	if dec.Action == ActionHITL {
@@ -317,9 +363,9 @@ func ruleMatches(m Match, req Request) bool {
 		if m.Provider != "" && !toolMatch(m.Provider, req.Provider) {
 			return false
 		}
-		return true
+		return len(m.Args) == 0 || argsMatch(m.Args, req.Args)
 	}
-	if m.Method != "" && !strings.EqualFold(m.Method, req.Method) {
+	if m.Method != "" && m.Method != "*" && !strings.EqualFold(m.Method, req.Method) {
 		return false
 	}
 	if m.Host != "" && !hostMatch(m.Host, req.Host) {
@@ -337,7 +383,7 @@ func toolMatch(pattern, tool string) bool {
 	pattern = strings.ToLower(pattern)
 	tool = strings.ToLower(tool)
 	if strings.Contains(pattern, "*") {
-		ok, err := filepath.Match(pattern, tool)
+		ok, err := path.Match(pattern, tool)
 		return err == nil && ok
 	}
 	return pattern == tool
@@ -352,8 +398,11 @@ func hasScope(have []string, want string) bool {
 	return false
 }
 
+// HostMatches reports whether host (with or without a port) matches any of patterns, using the
+// egress glob semantics: exact hosts or a single leading "*." wildcard label.
+func HostMatches(patterns []string, host string) bool { return hostAllowed(patterns, host) }
+
 func hostAllowed(allow []string, host string) bool {
-	host = stripPort(host)
 	for _, pat := range allow {
 		if hostMatch(pat, host) {
 			return true
@@ -362,18 +411,40 @@ func hostAllowed(allow []string, host string) bool {
 	return false
 }
 
-// hostMatch supports exact hosts and a single leading "*." wildcard label.
+// hostMatch supports exact hosts and a single leading "*." wildcard label. Hosts compare
+// case-insensitively, without their port and without a trailing root dot ("evil.com." is
+// "evil.com" to DNS, so it must hit the same rules). IP literals compare in canonical form, so
+// "[::1]:443" is "::1" and the IPv4-mapped "[::ffff:127.0.0.1]" is "127.0.0.1".
 func hostMatch(pattern, host string) bool {
-	pattern = stripPort(strings.ToLower(pattern))
-	host = stripPort(strings.ToLower(host))
+	pattern = normalizeHost(pattern)
+	host = normalizeHost(host)
+	if host == "" {
+		return false
+	}
 	if pattern == host {
 		return true
 	}
 	if strings.HasPrefix(pattern, "*.") {
 		suffix := pattern[1:] // ".github.com"
-		return strings.HasSuffix(host, suffix) && host != suffix[1:]
+		return len(host) > len(suffix) && strings.HasSuffix(host, suffix)
 	}
 	return false
+}
+
+func normalizeHost(h string) string {
+	h = strings.ToLower(h)
+	if host, _, err := net.SplitHostPort(h); err == nil {
+		h = host
+	} else if strings.HasPrefix(h, "[") && strings.HasSuffix(h, "]") {
+		h = h[1 : len(h)-1]
+	} else if net.ParseIP(h) == nil {
+		h = stripPort(h)
+	}
+	h = strings.TrimSuffix(h, ".")
+	if ip := net.ParseIP(h); ip != nil {
+		h = ip.String()
+	}
+	return h
 }
 
 func stripPort(host string) string {
@@ -384,17 +455,19 @@ func stripPort(host string) string {
 }
 
 // pathMatch supports "**" (any suffix) and "*" (single segment) glob semantics.
-func pathMatch(pattern, path string) bool {
-	if pattern == path {
+func pathMatch(pattern, p string) bool {
+	if pattern == p {
 		return true
 	}
 	if strings.HasSuffix(pattern, "/**") {
-		return strings.HasPrefix(path, strings.TrimSuffix(pattern, "**"))
+		return strings.HasPrefix(p, strings.TrimSuffix(pattern, "**"))
 	}
-	ok, err := filepath.Match(pattern, path)
+	// path.Match, not filepath.Match: on Windows the latter lets "*" cross "/" and treats "\"
+	// as a separator instead of an escape, so a rule would match more there than elsewhere.
+	ok, err := path.Match(pattern, p)
 	return err == nil && ok
 }
 
 func ruleFingerprint(r *Rule) string {
-	return strings.Join([]string{r.Match.Method, r.Match.Host, r.Match.Path, r.Match.Tool, r.Scope}, "\x1f")
+	return strings.Join([]string{r.Match.Method, r.Match.Host, r.Match.Path, r.Match.Tool, r.Scope}, "\x1f") + argsFingerprint(r.Match.Args)
 }

@@ -28,6 +28,7 @@ var policyTestCmd = &cobra.Command{
 	Use:   "test",
 	Short: "Evaluate a hypothetical tool call against the policy without executing it",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		ptFile = resolvePolicyPath(cmd)
 		cfg, exists, err := loadConfig(ptFile)
 		if err != nil {
 			return err
@@ -70,7 +71,7 @@ func init() {
 	policyTestCmd.Flags().StringVar(&ptTool, "tool", "", "MCP tool name (for tool-match rules)")
 	policyTestCmd.Flags().StringVar(&ptProvider, "provider", "", "Provider name (for request_access/get_credential rules)")
 	policyTestCmd.Flags().StringVar(&ptScopes, "scopes", "", "Comma-separated scopes carried by the token")
-	policyTestCmd.Flags().StringVar(&ptFile, "policy", "nexus.yaml", "Path to the policy file")
+	policyTestCmd.Flags().StringVar(&ptFile, "policy", "", policyFlagHelp)
 
 	policyCmd.AddCommand(policyTestCmd)
 	rootCmd.AddCommand(policyCmd)

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>nexus-cli approvals</title>
+    <link rel="stylesheet" href="/ui/app.css" />
+    <script src="/ui/app.js" defer></script>
+  </head>
+  <body>
+    <header>
+      <h1>nexus-cli <span class="muted">approvals</span></h1>
+      <div id="endpoint" class="muted"></div>
+      <div class="spacer"></div>
+      <span id="conn" class="pill">connecting…</span>
+      <button id="logout" type="button" class="ghost" hidden>Sign out</button>
+    </header>
+    <main>
+      <div id="banner" class="banner" hidden></div>
+      <section>
+        <h2>Pending <span id="pending-count" class="count">0</span></h2>
+        <div id="pending" class="cards"></div>
+        <p id="pending-empty" class="muted empty">No approvals waiting. New requests appear here automatically.</p>
+      </section>
+      <section>
+        <h2>Recently decided</h2>
+        <table id="recent-table">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Outcome</th>
+              <th>By</th>
+              <th>Agent</th>
+              <th>Tool</th>
+              <th>Target</th>
+            </tr>
+          </thead>
+          <tbody id="recent"></tbody>
+        </table>
+        <p id="recent-empty" class="muted empty">Nothing decided yet.</p>
+      </section>
+    </main>
+    <template id="card-tpl">
+      <article class="card">
+        <div class="row head">
+          <span class="tool"></span>
+          <span class="target"></span>
+        </div>
+        <dl>
+          <dt>Agent</dt>
+          <dd class="agent"></dd>
+          <dt>Acting as</dt>
+          <dd class="actas"></dd>
+          <dt>Reason</dt>
+          <dd class="reason"></dd>
+          <dt class="params-dt">Params</dt>
+          <dd class="params"></dd>
+        </dl>
+        <div class="row foot">
+          <span class="age muted"></span>
+          <span class="countdown"></span>
+          <div class="spacer"></div>
+          <button type="button" data-decision="once" class="allow">Allow once</button>
+          <button type="button" data-decision="session" class="allow">Allow for session</button>
+          <button type="button" data-decision="always" class="allow">Always</button>
+          <button type="button" data-decision="deny" class="deny">Deny</button>
+        </div>
+        <div class="bar"><div class="fill"></div></div>
+      </article>
+    </template>
+  </body>
+</html>

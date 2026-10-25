@@ -4,12 +4,15 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/whoisnjoguu/nexus-cli/pkg/state"
 )
 
 // ReplayGuard rejects reuse of a token ID (jti) within its validity window
 type ReplayGuard struct {
-	mu   sync.Mutex
-	seen map[string]time.Time // jti -> expiry
+	mu    sync.Mutex
+	seen  map[string]time.Time // jti -> expiry
+	store *state.File          // persistent backing (NewPersistentReplayGuard); nil = memory only
 }
 
 // NewReplayGuard builds an empty replay guard.
@@ -21,6 +24,9 @@ func NewReplayGuard() *ReplayGuard {
 func (g *ReplayGuard) Use(jti string, expiry time.Time) error {
 	if jti == "" {
 		return nil
+	}
+	if g.store != nil {
+		return g.usePersistent(jti, expiry)
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()

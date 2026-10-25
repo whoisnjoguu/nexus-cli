@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"testing"
 	"time"
 
@@ -106,7 +107,7 @@ func TestPersistAllowKeepsExactShape(t *testing.T) {
 	p.persistAllow(policy.Request{Method: "POST", Host: "api.github.com", Path: "/repos/a/b/issues"}, matched)
 
 	want := policy.Match{Method: "POST", Host: "api.github.com", Path: "/repos/a/b/issues"}
-	if got.Match != want || got.Action != policy.ActionAllow || got.Scope != "repo:write" || len(got.Taints) != 1 {
+	if !reflect.DeepEqual(got.Match, want) || got.Action != policy.ActionAllow || got.Scope != "repo:write" || len(got.Taints) != 1 {
 		t.Fatalf("persisted rule = %+v", got)
 	}
 }
